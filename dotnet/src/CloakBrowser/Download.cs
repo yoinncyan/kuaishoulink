@@ -1,0 +1,1430 @@
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Formats.Tar;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+
+namespace CloakBrowser;
+
+/// <summary>Info about the current binary installation (returned by <see cref="Download.BinaryInfo"/>).</summary>
+public sealed record CloakBinaryInfo(
+    string Version,
+    string Tier,
+    string BundledVersion,
+    string Platform,
+    string BinaryPath,
+    bool Installed,
+    string CacheDir,
+    string DownloadUrl);
+
+/// <summary>
+/// A downloaded binary could not be authenticated (bad/missing signature, version
+/// mismatch, or checksum failure).
+///
+/// Distinct from transient download/network errors: a verification failure is a
+/// tampering signal and MUST surface, never silently fall back to another binary.
+/// The Pro routing in <see cref="Download.EnsureBinaryAsync"/> re-raises this rather
+/// than downgrading to the free tier.
+/// </summary>
+public sealed class BinaryVerificationError : Exception
+{
+    public BinaryVerificationError(string message) : base(message) { }
+    public BinaryVerificationError(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>
+/// Binary download and cache management for CloakBrowser.
+/// Downloads the patched Chromium binary on first use, caches it locally.
+/// Direct port of Python <c>cloakbrowser/download.py</c>.
+/// </summary>
+public static class Download
+{
+    // Auto-update check interval (1 hour).
+    private const int UpdateCheckInterval = 3600;
+
+    // Free-tier welcome banner re-show interval (1 day, seconds). Free users see
+    // the "get the latest free" invite again after this gap; Pro users see it only
+    // once (see ShowWelcome).
+    internal const long WelcomeFreeInterval = 24L * 3600;
+
+    private static readonly HttpClient Http = CreateHttpClient();
+
+    private static HttpClient CreateHttpClient()
+    {
+        var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd($"cloakbrowser-dotnet/{CloakVersion.Version}");
+        return client;
+    }
+
+    private static bool _wrapperUpdateChecked;
+
+    // -----------------------------------------------------------------------
+    // Testing seams - mirror the monkey-patching the Python/JS tests rely on.
+    // These let unit tests inject pinned keys and a signed manifest without
+    // touching the network. Null means "use real behavior" in production.
+    // -----------------------------------------------------------------------
+
+    /// <summary>Overrides the pinned signing keys for tests. Null -> use <see cref="Config.BinarySigningPubkeys"/>.</summary>
+    internal static IReadOnlyList<string>? SigningPubkeysOverride;
+
+    /// <summary>Overrides the fetched (manifest, sig) pair for tests. Null -> fetch over HTTP.</summary>
+    internal static Func<string?, (byte[] Manifest, byte[] Sig)?>? SignedManifestOverride;
+
+    /// <summary>Overrides the fetched Pro (manifest, sig) pair for tests. Null -> fetch over HTTP.</summary>
+    internal static Func<string, (byte[] Manifest, byte[] Sig)?>? ProSignedManifestOverride;
+
+    private static IReadOnlyList<string> EffectiveSigningPubkeys =>
+        SigningPubkeysOverride ?? Config.BinarySigningPubkeys;
+
+    // -----------------------------------------------------------------------
+
+    // Pro Chromium major shown in the free-tier welcome banner. Bump at each Pro
+    // major release (there is no local constant to derive it from - the live Pro
+    // version comes from the network, which we don't call just to print a banner).
+    private const string ProMajor = "151";
+
+    /// <summary>
+    /// Whether the welcome banner should be shown now. Pro: once ever (only when
+    /// the marker is absent). Free: re-show when the marker is absent or its
+    /// timestamp is older than <see cref="WelcomeFreeInterval"/>. Unreadable or
+    /// legacy empty markers count as stale (due).
+    /// </summary>
+    internal static bool WelcomeDue(string marker, bool pro)
+    {
+        if (!File.Exists(marker)) return true;
+        if (pro) return false;
+        try
+        {
+            if (!long.TryParse(File.ReadAllText(marker).Trim(), out var last)) return true;
+            return DateTimeOffset.UtcNow.ToUnixTimeSeconds() - last >= WelcomeFreeInterval;
+        }
+        catch
+        {
+            // Unreadable marker (IO, permissions, etc.) counts as stale — never crash.
+            return true;
+        }
+    }
+
+    private static bool _previewFallbackWarned;
+
+    /// <summary>Reset the once-per-process Preview-fallback notice. Test seam.</summary>
+    internal static void ResetPreviewFallbackWarned() => _previewFallbackWarned = false;
+
+    /// <summary>
+    /// Tell the user, once per process, that a requested Preview build does not exist
+    /// for this platform and the Stable build is being used instead.
+    /// </summary>
+    private static void WarnPreviewFallback()
+    {
+        if (_previewFallbackWarned) return;
+        _previewFallbackWarned = true;
+        Console.Error.WriteLine(
+            "[cloakbrowser] Preview channel requested, but no preview build is available for "
+            + $"{Config.GetPlatformTag()}; using the stable build.");
+    }
+
+    /// <summary>
+    /// Show the launch welcome banner. A marker file gates the cadence: a paid
+    /// (Pro) key shows once ever; free (keyless or a free GitHub key) re-shows
+    /// every <see cref="WelcomeFreeInterval"/>. Mirrors Python <c>_show_welcome(tier)</c>.
+    ///
+    /// <paramref name="tier"/>:
+    ///   "pro"     — a paid license key (Pro banner + support address)
+    ///   "free"    — a free GitHub key (latest binary, one concurrent session)
+    ///   "keyless" — no key, running the older free binary (invite the free login)
+    /// </summary>
+    internal static void ShowWelcome(string tier = "keyless")
+    {
+        var marker = Path.Combine(Config.GetCacheDir(), ".welcome_shown");
+        if (!WelcomeDue(marker, tier == "pro")) return;
+
+        // ASCII-only banner: on a legacy Windows console a non-ASCII glyph can
+        // crash or mojibake the write, and this runs on the binary-download
+        // path (ticket 2354). Keep the three wrappers byte-parallel.
+        var sb = new System.Text.StringBuilder();
+        sb.Append('\n');
+        sb.Append("  CloakBrowser - stealth Chromium for automation\n");
+        sb.Append("  https://github.com/CloakHQ/CloakBrowser\n");
+        sb.Append('\n');
+        if (tier == "pro")
+        {
+            sb.Append($"  CloakBrowser Pro active (v{ProMajor}) - latest binary, newest patches.\n");
+            sb.Append("  Pro support -> support@cloakbrowser.dev\n");
+        }
+        else if (tier == "free")
+        {
+            sb.Append($"  CloakBrowser free (v{ProMajor}): the latest binary, 1 concurrent session.\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
+        }
+        else
+        {
+            var freeMajor = Config.GetChromiumVersion().Split('.')[0];
+            sb.Append($"  Running the free binary (v{freeMajor}). " +
+                      $"The latest binary (v{ProMajor}) is free too, with 1 concurrent session.\n");
+            sb.Append("  Get your key: run  cloakbrowser login  or visit https://cloakbrowser.dev/free\n");
+            sb.Append("  For more than one concurrent session -> https://cloakbrowser.dev\n");
+        }
+        sb.Append("  Star us if CloakBrowser helps your project!\n");
+        sb.Append('\n');
+        Console.Error.Write(sb.ToString());
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+            File.WriteAllText(marker, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
+        }
+        catch { /* marker write is best-effort (IO, permissions, etc.) — never crash */ }
+    }
+
+    /// <summary>
+    /// Ensure the stealth Chromium binary is available. Download if needed.
+    /// Returns the path to the chrome executable. Set <c>CLOAKBROWSER_BINARY_PATH</c>
+    /// to skip download and use a local build.
+    /// </summary>
+    /// <param name="licenseKey">
+    /// CloakBrowser Pro license key. Also read from the <c>CLOAKBROWSER_LICENSE_KEY</c>
+    /// env var or <c>~/.cloakbrowser/license.key</c>. With a valid key the latest Pro
+    /// binary is downloaded from cloakbrowser.dev; without one, the free binary
+    /// downloads from GitHub Releases exactly as before.
+    /// </param>
+    /// <param name="browserVersion">
+    /// Exact Chromium version pin. Also read from the <c>CLOAKBROWSER_VERSION</c>
+    /// env var. When set, downloads (and caches) this specific version instead of
+    /// the platform default.
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="releaseChannel">Stable (default) or Preview binary channel.</param>
+    public static async Task<string> EnsureBinaryAsync(
+        string? licenseKey = null, string? browserVersion = null,
+        CancellationToken ct = default, string? releaseChannel = null)
+    {
+        // Check for local override first.
+        var localOverride = Config.GetLocalBinaryOverride();
+        if (!string.IsNullOrEmpty(localOverride))
+        {
+            if (!File.Exists(localOverride))
+                throw new FileNotFoundException(
+                    $"CLOAKBROWSER_BINARY_PATH set to '{localOverride}' but file does not exist");
+            CloakLog.Info("Using local binary override: {0}", localOverride);
+            return localOverride;
+        }
+
+        var requestedVersion = Config.NormalizeRequestedVersion(browserVersion);
+
+        // Pro license key check (a custom CLOAKBROWSER_DOWNLOAD_URL overrides the Pro path).
+        // Treat an empty value as unset (falsy), matching Python/JS semantics.
+        var key = License.ResolveLicenseKey(licenseKey);
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL")))
+            key = null;
+
+        if (!string.IsNullOrEmpty(key))
+        {
+            var info = License.ValidateLicense(key);
+            if (info != null && info.Valid)
+            {
+                // Free tier always gets the latest build. Drop any version pin: the
+                // server force-serves latest to free keys, so fetching a pinned
+                // version's signed manifest would mismatch the served bytes and fail
+                // checksum verification. Paid keys keep pinning/rollback.
+                var proVersion = info.Plan == "free" ? null : requestedVersion;
+                // A valid license is entitled to Pro, so Pro failures surface loudly
+                // rather than silently substituting the older free binary. (A blip
+                // during a routine update never reaches here: EnsureProBinaryAsync
+                // returns the cached Pro binary and updates in the background.)
+                try
+                {
+                    return await EnsureProBinaryAsync(
+                        key, proVersion, info.Plan, ct, releaseChannel).ConfigureAwait(false);
+                }
+                catch (BinaryVerificationError)
+                {
+                    // Authenticity could not be confirmed - surface verbatim.
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    // Transient failure with no cached Pro binary to use - surface a
+                    // clear error rather than silently downloading the free binary.
+                    throw new InvalidOperationException(
+                        $"Pro binary unavailable: {e.Message}. Your license is valid but the " +
+                        "Pro binary could not be downloaded right now. Retry in a moment. " +
+                        "To use the free binary instead, unset CLOAKBROWSER_LICENSE_KEY.", e);
+                }
+            }
+            else if (info != null)
+            {
+                // Key supplied but rejected - abort, never downgrade to free.
+                throw new InvalidOperationException(
+                    $"CloakBrowser Pro: license key is invalid or expired (plan={info.Plan}). " +
+                    "Check CLOAKBROWSER_LICENSE_KEY, or unset it to use the free binary.");
+            }
+            else
+            {
+                // Key supplied but unvalidatable (server down, no cache) - abort.
+                throw new InvalidOperationException(
+                    "CloakBrowser Pro: license could not be validated (server unreachable " +
+                    "and no cached validation). Retry in a moment, or unset " +
+                    "CLOAKBROWSER_LICENSE_KEY to use the free binary.");
+            }
+        }
+
+        // Fail fast if no binary available for this platform.
+        Config.CheckPlatformAvailable();
+
+        if (requestedVersion != null)
+        {
+            var pinnedPath = Config.GetBinaryPath(requestedVersion);
+            if (File.Exists(pinnedPath) && IsExecutable(pinnedPath))
+            {
+                CloakLog.Debug("Pinned binary found in cache: {0} (version {1})", pinnedPath, requestedVersion);
+                ShowWelcome();
+                return pinnedPath;
+            }
+
+            CloakLog.Info("Stealth Chromium {0} not found. Downloading for {1}...",
+                requestedVersion, Config.GetPlatformTag());
+            await DownloadAndExtractAsync(requestedVersion, ct).ConfigureAwait(false);
+
+            if (!File.Exists(pinnedPath) || !IsExecutable(pinnedPath))
+                throw new InvalidOperationException(
+                    $"Pinned download completed but binary not found at expected path: {pinnedPath}. " +
+                    "This may indicate a packaging issue. Please report at " +
+                    "https://github.com/CloakHQ/cloakbrowser/issues");
+            ShowWelcome();
+            return pinnedPath;
+        }
+
+        // Check for auto-updated version first, then fall back to hardcoded.
+        // Free tier never returns null (bundled base is the floor).
+        var effective = Config.GetEffectiveVersion()!;
+        var binaryPath = Config.GetBinaryPath(effective);
+
+        if (File.Exists(binaryPath) && IsExecutable(binaryPath))
+        {
+            CloakLog.Debug("Binary found in cache: {0} (version {1})", binaryPath, effective);
+            ShowWelcome();
+            MaybeTriggerUpdateCheck();
+            return binaryPath;
+        }
+
+        // Fall back to platform's hardcoded version if effective version binary doesn't exist.
+        var platformVersion = Config.GetChromiumVersion();
+        if (effective != platformVersion)
+        {
+            var fallbackPath = Config.GetBinaryPath();
+            if (File.Exists(fallbackPath) && IsExecutable(fallbackPath))
+            {
+                CloakLog.Debug("Binary found in cache: {0}", fallbackPath);
+                MaybeTriggerUpdateCheck();
+                return fallbackPath;
+            }
+        }
+
+        // Download platform's hardcoded version.
+        CloakLog.Info("Stealth Chromium {0} not found. Downloading for {1}...",
+            platformVersion, Config.GetPlatformTag());
+        await DownloadAndExtractAsync(null, ct).ConfigureAwait(false);
+
+        binaryPath = Config.GetBinaryPath();
+        if (!File.Exists(binaryPath))
+            throw new InvalidOperationException(
+                $"Download completed but binary not found at expected path: {binaryPath}. " +
+                "This may indicate a packaging issue. Please report at " +
+                "https://github.com/CloakHQ/cloakbrowser/issues");
+
+        MaybeTriggerUpdateCheck();
+        return binaryPath;
+    }
+
+    /// <summary>Synchronous convenience wrapper around <see cref="EnsureBinaryAsync"/>.</summary>
+    public static string EnsureBinary(
+        string? licenseKey = null, string? browserVersion = null, string? releaseChannel = null) =>
+        EnsureBinaryAsync(licenseKey, browserVersion, releaseChannel: releaseChannel).GetAwaiter().GetResult();
+
+    private static async Task DownloadAndExtractAsync(string? version, CancellationToken ct)
+    {
+        var primaryUrl = Config.GetDownloadUrl(version);
+        var fallbackUrl = Config.GetFallbackDownloadUrl(version);
+        var binaryDir = Config.GetBinaryDir(version);
+        var binaryPath = Config.GetBinaryPath(version);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(binaryDir)!);
+
+        var tmpPath = Path.Combine(Path.GetTempPath(),
+            $"cloakbrowser-{Guid.NewGuid():N}{Config.GetArchiveExt()}");
+
+        try
+        {
+            // Try primary, fall back to GitHub Releases (skip fallback if custom URL).
+            try
+            {
+                await DownloadFileAsync(primaryUrl, tmpPath, ct).ConfigureAwait(false);
+            }
+            catch (Exception primaryErr)
+            {
+                if (Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL") != null)
+                    throw;
+                CloakLog.Warning("Primary download failed ({0}), trying GitHub Releases...", primaryErr.Message);
+                await DownloadFileAsync(fallbackUrl, tmpPath, ct).ConfigureAwait(false);
+            }
+
+            // Verify the download before extraction. On the official path this is a
+            // mandatory, non-bypassable Ed25519 signature check (see
+            // VerifyDownloadChecksumAsync); the skip flag only applies to custom
+            // self-hosted CLOAKBROWSER_DOWNLOAD_URL setups.
+            await VerifyDownloadChecksumAsync(tmpPath, version, ct).ConfigureAwait(false);
+
+            ExtractArchive(tmpPath, binaryDir, binaryPath);
+            ShowWelcome();
+        }
+        finally
+        {
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch (IOException) { }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CloakBrowser Pro download path
+    // -----------------------------------------------------------------------
+
+    /// <summary>Ensure the Pro binary is downloaded and cached. Returns the binary path.</summary>
+    private static async Task<string> EnsureProBinaryAsync(
+        string licenseKey, string? requestedVersion, string? plan,
+        CancellationToken ct, string? releaseChannel)
+    {
+        // A validated free GitHub key routes here too (it downloads the latest binary),
+        // but its welcome banner is the "free" one, not the paid Pro banner.
+        var welcomeTier = plan == "free" ? "free" : "pro";
+
+        if (requestedVersion != null)
+        {
+            var pinnedPath = Config.GetBinaryPath(requestedVersion, pro: true);
+            if (File.Exists(pinnedPath) && IsExecutable(pinnedPath))
+            {
+                CloakLog.Debug("Pinned Pro binary found in cache: {0} (version {1})", pinnedPath, requestedVersion);
+                ShowWelcome(welcomeTier);
+                return pinnedPath;
+            }
+
+            CloakLog.Info("Downloading Pro Chromium {0} for {1}...", requestedVersion, Config.GetPlatformTag());
+            await DownloadProBinaryAsync(requestedVersion, licenseKey, ct).ConfigureAwait(false);
+
+            pinnedPath = Config.GetBinaryPath(requestedVersion, pro: true);
+            if (!File.Exists(pinnedPath) || !IsExecutable(pinnedPath))
+                throw new InvalidOperationException(
+                    $"Pro download completed but binary not found at: {pinnedPath}");
+
+            // Do NOT write the Pro version marker for a pinned download. A rollback
+            // pin must not make future unpinned launches stick to the old build.
+            ShowWelcome(welcomeTier);
+            return pinnedPath;
+        }
+
+        // Unpinned: track the server's latest selected channel.
+        var effective = Config.GetEffectiveVersion(pro: true, releaseChannel: releaseChannel);
+
+        // Honor CLOAKBROWSER_AUTO_UPDATE=false the way the free path does: frozen AND a
+        // cached Pro build present → keep it, skip the server check. With no cached build
+        // we must still fetch one — a valid Pro license never launches the free binary.
+        // (The `update` CLI ignores this and always acts.)
+        var frozen = string.Equals(
+            Environment.GetEnvironmentVariable("CLOAKBROWSER_AUTO_UPDATE"), "false",
+            StringComparison.OrdinalIgnoreCase);
+        if (frozen && ProBinaryReady(effective))
+        {
+            ShowWelcome(welcomeTier);
+            return Config.GetBinaryPath(effective, pro: true);
+        }
+
+        // GetProLatestVersion() is rate-limited to one network call per hour and returns a
+        // cached string in between, so this foreground check stays cheap steady-state.
+        var latest = License.GetProLatestVersion(releaseChannel);
+
+        // Tell the user when they asked for Preview but the server has no preview build
+        // for this platform, so the Stable build is used instead. The lookup is a cache
+        // hit (GetProLatestVersion above already populated it), so this only touches the
+        // network on the once-an-hour refresh.
+        if (Config.NormalizeReleaseChannel(releaseChannel) == "preview")
+        {
+            var release = License.GetProLatestRelease(releaseChannel);
+            if (release is { Fallback: true })
+                WarnPreviewFallback();
+        }
+
+        // Prefer the server's latest when it is newer than — or replaces a missing — the
+        // cached build. Otherwise stay on the cached Pro binary (fast, offline-ok).
+        string? version;
+        if (!string.IsNullOrEmpty(latest) &&
+            (!ProBinaryReady(effective) || Config.VersionNewer(latest, effective!))) // !ProBinaryReady covers effective == null
+        {
+            version = latest;
+        }
+        else
+        {
+            version = effective;
+        }
+
+        if (version == null)
+        {
+            // Valid Pro license but nothing resolvable (server unreachable AND no cached
+            // Pro build). Never downgrade to the free binary — fail loudly.
+            throw new InvalidOperationException("Could not determine latest Pro version from server");
+        }
+
+        var readyPath = Config.GetBinaryPath(version, pro: true);
+        if (File.Exists(readyPath) && IsExecutable(readyPath))
+        {
+            // Advance the marker if this cached build is newer than what the marker names,
+            // so `info` (and a later server-outage launch) reflect the build we actually
+            // launch — never a stale marker.
+            if (version != effective)
+                WriteProVersionMarker(version, releaseChannel);
+            CloakLog.Debug("Pro binary found in cache: {0} (version {1})", readyPath, version);
+            ShowWelcome(welcomeTier);
+            return readyPath;
+        }
+
+        // `version` (the server latest) needs downloading. On failure, fall back to a
+        // cached Pro build if we have one — never the free binary.
+        try
+        {
+            CloakLog.Info("Downloading Pro Chromium {0} for {1}...", version, Config.GetPlatformTag());
+            await DownloadProBinaryAsync(version, licenseKey, ct).ConfigureAwait(false);
+        }
+        catch (BinaryVerificationError)
+        {
+            // A tampering signal must surface verbatim — never mask it behind the
+            // cached-Pro fallback, which is only for transient download failures.
+            throw;
+        }
+        catch (Exception)
+        {
+            if (ProBinaryReady(effective))
+            {
+                CloakLog.Warning("Pro update to {0} failed; launching cached Pro binary {1}", version, effective);
+                ShowWelcome(welcomeTier);
+                return Config.GetBinaryPath(effective, pro: true);
+            }
+            throw;
+        }
+
+        var downloadedPath = Config.GetBinaryPath(version, pro: true);
+        if (!File.Exists(downloadedPath))
+            throw new InvalidOperationException(
+                $"Pro download completed but binary not found at: {downloadedPath}");
+
+        WriteProVersionMarker(version, releaseChannel);
+        ShowWelcome(welcomeTier);
+        return downloadedPath;
+    }
+
+    /// <summary>
+    /// Download a Pro binary from cloakbrowser.dev with license-key auth. Requests the
+    /// explicit version so the served archive matches the signed manifest verified in
+    /// <see cref="VerifyProDownloadAsync"/>.
+    /// </summary>
+    private static async Task DownloadProBinaryAsync(string version, string licenseKey, CancellationToken ct)
+    {
+        var downloadUrl = Config.GetProDownloadUrl(version);
+        var binaryDir = Config.GetBinaryDir(version, pro: true);
+        var binaryPath = Config.GetBinaryPath(version, pro: true);
+        var platformTag = Config.GetPlatformTag();
+
+        Directory.CreateDirectory(Path.GetDirectoryName(binaryDir)!);
+
+        var tmpPath = Path.Combine(Path.GetTempPath(),
+            $"cloakbrowser-{Guid.NewGuid():N}{Config.GetArchiveExt()}");
+
+        try
+        {
+            await DownloadFileAsync(downloadUrl, tmpPath, ct, new Dictionary<string, string>
+            {
+                ["Authorization"] = $"Bearer {licenseKey}",
+                ["X-Platform"] = platformTag,
+            }).ConfigureAwait(false);
+
+            // Pro binaries come from cloakbrowser.dev - the same origin as free
+            // downloads - so the same attack the Ed25519 signature defends against
+            // applies equally. Verify with the same non-bypassable signature check;
+            // CLOAKBROWSER_SKIP_CHECKSUM does NOT bypass it (parity with the free path).
+            await VerifyProDownloadAsync(tmpPath, version, ct).ConfigureAwait(false);
+
+            ExtractArchive(tmpPath, binaryDir, binaryPath);
+        }
+        finally
+        {
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// Verify a Pro archive with the same non-bypassable Ed25519 signature check as
+    /// official free downloads.
+    ///
+    /// Pro binaries are served from cloakbrowser.dev (same origin as the free tier), so
+    /// a tampered same-origin SHA256SUMS could otherwise certify a tampered binary
+    /// (#308). Fetch the Pro SHA256SUMS + detached SHA256SUMS.sig, verify the signature
+    /// against the pinned keys FIRST, bind the manifest to the requested version, then
+    /// verify the archive's SHA-256. An invalid signature, checksum, or version mismatch
+    /// throws <see cref="BinaryVerificationError"/> (a tampering signal the router surfaces
+    /// verbatim); a failed manifest FETCH is transient and throws a plain
+    /// <see cref="InvalidOperationException"/>, never silently downgrading a valid-license user.
+    /// </summary>
+    internal static async Task VerifyProDownloadAsync(string filePath, string version, CancellationToken ct)
+    {
+        (byte[] Manifest, byte[] Sig)? manifest;
+        if (ProSignedManifestOverride != null)
+        {
+            manifest = ProSignedManifestOverride(version);
+            if (manifest == null)
+                throw new InvalidOperationException(
+                    $"Could not fetch the signed SHA256SUMS for Pro {version}");
+        }
+        else
+        {
+            var baseUrl = Config.GetProManifestBaseUrl(version);
+            try
+            {
+                using var manifestResp = await Http.GetAsync($"{baseUrl}/SHA256SUMS", ct).ConfigureAwait(false);
+                manifestResp.EnsureSuccessStatusCode();
+                var manifestBytes = await manifestResp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+                using var sigResp = await Http.GetAsync($"{baseUrl}/SHA256SUMS.sig", ct).ConfigureAwait(false);
+                sigResp.EnsureSuccessStatusCode();
+                var sigBytes = await sigResp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+                manifest = (manifestBytes, sigBytes);
+            }
+            catch (Exception exc)
+            {
+                // Fetch failure is transient, not tampering - raise a plain
+                // InvalidOperationException (the router reports it as "unavailable,
+                // retry") rather than a BinaryVerificationError (a tampering signal).
+                throw new InvalidOperationException(
+                    $"Could not fetch the signed SHA256SUMS for Pro {version} ({exc.Message})", exc);
+            }
+        }
+
+        var (manifestData, sigData) = manifest.Value;
+
+        // VerifySignature / VerifyChecksum throw InvalidOperationException; convert to
+        // BinaryVerificationError so the Pro router treats them as tampering signals
+        // (re-raise) rather than transient failures (fall back to free).
+        try
+        {
+            VerifySignature(manifestData, sigData);
+        }
+        catch (InvalidOperationException exc)
+        {
+            throw new BinaryVerificationError(exc.Message, exc);
+        }
+
+        var manifestText = System.Text.Encoding.UTF8.GetString(manifestData);
+
+        // Version binding: same forced-downgrade defense as the official free path.
+        var declared = ParseManifestVersion(manifestText);
+        if (declared != version)
+            throw new BinaryVerificationError(
+                $"Version mismatch in signed Pro SHA256SUMS: requested {version}, " +
+                $"manifest declares {declared ?? "none"}. Refusing (possible downgrade).");
+
+        var tarballName = Config.GetArchiveName();
+        var checksums = ParseChecksums(manifestText);
+        if (!checksums.TryGetValue(tarballName, out var expected))
+            throw new BinaryVerificationError(
+                $"Signature-verified Pro SHA256SUMS has no entry for {tarballName} - " +
+                "cannot confirm binary integrity.");
+        try
+        {
+            VerifyChecksum(filePath, expected);
+        }
+        catch (InvalidOperationException exc)
+        {
+            throw new BinaryVerificationError(exc.Message, exc);
+        }
+    }
+
+    private static void WriteProVersionMarker(string version, string? releaseChannel = null)
+    {
+        var markerPrefix = Config.NormalizeReleaseChannel(releaseChannel) == "preview"
+            ? "latest_pro_version_preview"
+            : "latest_pro_version";
+        var marker = Path.Combine(Config.GetCacheDir(), $"{markerPrefix}_{Config.GetPlatformTag()}");
+        try
+        {
+            Directory.CreateDirectory(Config.GetCacheDir());
+            var tmp = marker + ".tmp";
+            File.WriteAllText(tmp, version);
+            File.Move(tmp, marker, overwrite: true);
+        }
+        catch (IOException) { }
+    }
+
+    /// <summary>
+    /// Verify the downloaded archive's integrity and authenticity.
+    ///
+    /// Official path (cloakbrowser.dev / GitHub Releases): fetch SHA256SUMS plus
+    /// its detached Ed25519 signature SHA256SUMS.sig, verify the signature against
+    /// the pinned public keys FIRST, then verify the archive's SHA-256 against the
+    /// now-authenticated manifest. Mandatory and non-bypassable - a same-origin
+    /// manifest can no longer certify a tampered binary (#308).
+    ///
+    /// Custom self-hosted path (CLOAKBROWSER_DOWNLOAD_URL set): the pinned keys do
+    /// not apply to a third-party server, so fall back to the plain same-origin
+    /// SHA256SUMS check, which CLOAKBROWSER_SKIP_CHECKSUM may bypass.
+    /// </summary>
+    /// <summary>Synchronous wrapper around <see cref="VerifyDownloadChecksumAsync"/> for tests.</summary>
+    internal static void VerifyDownloadChecksum(string filePath, string? version = null) =>
+        VerifyDownloadChecksumAsync(filePath, version, default).GetAwaiter().GetResult();
+
+    internal static async Task VerifyDownloadChecksumAsync(string filePath, string? version, CancellationToken ct)
+    {
+        var tarballName = Config.GetArchiveName();
+
+        if (Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL") != null)
+        {
+            // Self-hosted mirror: signature scheme does not apply. Preserve the
+            // legacy same-origin checksum behavior, skippable as before.
+            if ((Environment.GetEnvironmentVariable("CLOAKBROWSER_SKIP_CHECKSUM") ?? "")
+                .ToLowerInvariant() == "true")
+            {
+                CloakLog.Warning(
+                    "CLOAKBROWSER_SKIP_CHECKSUM set - skipping verification for custom download URL");
+                return;
+            }
+            var checksums = await FetchChecksumsAsync(version, ct).ConfigureAwait(false);
+            if (checksums == null)
+            {
+                CloakLog.Warning(
+                    "SHA256SUMS not available from custom URL - skipping checksum verification");
+                return;
+            }
+            if (!checksums.TryGetValue(tarballName, out var exp))
+            {
+                CloakLog.Warning(
+                    "SHA256SUMS found but no entry for {0} - skipping verification", tarballName);
+                return;
+            }
+            VerifyChecksum(filePath, exp);
+            return;
+        }
+
+        // Official path: signature is the trust root and is non-bypassable.
+        var manifest = SignedManifestOverride != null
+            ? SignedManifestOverride(version)
+            : await FetchSignedManifestAsync(version, ct).ConfigureAwait(false);
+        if (manifest == null)
+            throw new InvalidOperationException(
+                "Could not fetch a signed SHA256SUMS (SHA256SUMS + SHA256SUMS.sig) " +
+                "for this release - refusing to use an unverified binary. " +
+                "Retry, or report at https://github.com/CloakHQ/cloakbrowser/issues");
+
+        var (manifestBytes, sigBytes) = manifest.Value;
+        VerifySignature(manifestBytes, sigBytes);
+        var manifestText = System.Text.Encoding.UTF8.GetString(manifestBytes);
+
+        // Version binding: the signed manifest must declare the version we asked for.
+        // The signature proves "we made this manifest", not "this is the version you
+        // requested" - without this check a mirror could serve a genuinely-signed
+        // older release in place of the requested one (forced downgrade).
+        var requested = version ?? Config.GetChromiumVersion();
+        var declared = ParseManifestVersion(manifestText);
+        if (declared != requested)
+            throw new InvalidOperationException(
+                $"Version mismatch in signed SHA256SUMS: requested {requested}, " +
+                $"manifest declares {declared ?? "none"}. Refusing (possible downgrade).");
+
+        var manifestChecksums = ParseChecksums(manifestText);
+        if (!manifestChecksums.TryGetValue(tarballName, out var expected))
+            throw new InvalidOperationException(
+                $"Signature-verified SHA256SUMS has no entry for {tarballName} - " +
+                "cannot confirm binary integrity.");
+        VerifyChecksum(filePath, expected);
+    }
+
+    /// <summary>
+    /// Read the 'version=&lt;v&gt;' line from a signed manifest. Null if absent.
+    /// The line has no internal whitespace so older wrappers' SHA256SUMS parsers
+    /// ignore it (they only accept '&lt;hash&gt;  &lt;filename&gt;' lines).
+    /// </summary>
+    internal static string? ParseManifestVersion(string text)
+    {
+        foreach (var rawLine in text.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith("version=", StringComparison.Ordinal))
+                return line.Substring("version=".Length).Trim();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Fetch (SHA256SUMS, SHA256SUMS.sig) raw bytes for a version, or null.
+    /// Both files are fetched from the SAME origin so the signature always matches
+    /// the exact manifest bytes it certifies. The primary origin is tried first,
+    /// then the GitHub Releases mirror.
+    /// </summary>
+    internal static async Task<(byte[] Manifest, byte[] Sig)?> FetchSignedManifestAsync(
+        string? version, CancellationToken ct)
+    {
+        var v = version ?? Config.GetChromiumVersion();
+        var bases = new[]
+        {
+            $"{Config.DownloadBaseUrl}/chromium-v{v}",
+            $"{Config.GitHubDownloadBaseUrl}/chromium-v{v}",
+        };
+        foreach (var b in bases)
+        {
+            try
+            {
+                using var manifestResp = await Http.GetAsync($"{b}/SHA256SUMS", ct).ConfigureAwait(false);
+                manifestResp.EnsureSuccessStatusCode();
+                var manifestBytes = await manifestResp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+                using var sigResp = await Http.GetAsync($"{b}/SHA256SUMS.sig", ct).ConfigureAwait(false);
+                sigResp.EnsureSuccessStatusCode();
+                var sigBytes = await sigResp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+
+                return (manifestBytes, sigBytes);
+            }
+            catch (Exception) { /* try next origin */ }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Verify a detached Ed25519 signature over the raw manifest bytes.
+    /// <paramref name="sigB64"/> is the base64 of the 64-byte raw signature. Tries
+    /// each pinned key in <see cref="Config.BinarySigningPubkeys"/>; succeeds if any
+    /// validates. Throws <see cref="InvalidOperationException"/> if the signature is
+    /// malformed or no pinned key validates it.
+    /// </summary>
+    internal static void VerifySignature(byte[] manifestBytes, byte[] sigB64)
+    {
+        byte[] signature;
+        try
+        {
+            var sigText = System.Text.Encoding.ASCII.GetString(sigB64).Trim();
+            signature = Convert.FromBase64String(sigText);
+        }
+        catch (Exception exc)
+        {
+            throw new InvalidOperationException($"Malformed SHA256SUMS.sig (not valid base64): {exc.Message}");
+        }
+
+        foreach (var pubkeyB64 in EffectiveSigningPubkeys)
+        {
+            byte[] pubBytes;
+            try
+            {
+                pubBytes = Convert.FromBase64String(pubkeyB64);
+                if (pubBytes.Length != 32)
+                    continue;
+            }
+            catch (Exception)
+            {
+                // Skip an unparseable pinned key (e.g. a placeholder) rather than
+                // aborting - another pinned key may still validate.
+                continue;
+            }
+
+            try
+            {
+                var verifier = new Org.BouncyCastle.Crypto.Signers.Ed25519Signer();
+                verifier.Init(false, new Org.BouncyCastle.Crypto.Parameters.Ed25519PublicKeyParameters(pubBytes, 0));
+                verifier.BlockUpdate(manifestBytes, 0, manifestBytes.Length);
+                if (verifier.VerifySignature(signature))
+                {
+                    CloakLog.Info("SHA256SUMS signature verified: Ed25519 OK");
+                    return;
+                }
+            }
+            catch (Exception)
+            {
+                // Wrong-length/malformed signature for this key - try the next pinned
+                // key (and ultimately fail closed below).
+                continue;
+            }
+        }
+
+        throw new InvalidOperationException(
+            "SHA256SUMS signature verification failed - no pinned key validated the " +
+            "manifest. The binary's authenticity could not be confirmed. " +
+            "Report at https://github.com/CloakHQ/cloakbrowser/issues");
+    }
+
+    private static async Task<Dictionary<string, string>?> FetchChecksumsAsync(string? version, CancellationToken ct)
+    {
+        var v = version ?? Config.GetChromiumVersion();
+        var hasCustomUrl = Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL") != null;
+
+        var urls = new List<string> { $"{Config.DownloadBaseUrl}/chromium-v{v}/SHA256SUMS" };
+        if (!hasCustomUrl)
+            urls.Add($"{Config.GitHubDownloadBaseUrl}/chromium-v{v}/SHA256SUMS");
+
+        foreach (var url in urls)
+        {
+            try
+            {
+                using var resp = await Http.GetAsync(url, ct).ConfigureAwait(false);
+                resp.EnsureSuccessStatusCode();
+                var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                return ParseChecksums(text);
+            }
+            catch (Exception) { /* try next */ }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Parse SHA256SUMS format: '&lt;64-hex sha256&gt;  filename' per line.
+    /// Only lines whose first token is a 64-character hex digest are accepted
+    /// (matches the Python/JS parser); blank lines, the version= line, and any
+    /// other junk are ignored.
+    /// </summary>
+    internal static Dictionary<string, string> ParseChecksums(string text)
+    {
+        var result = new Dictionary<string, string>();
+        foreach (var rawLine in text.Trim().Replace("\r\n", "\n").Split('\n'))
+        {
+            var parts = rawLine.Trim().Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2) continue;
+            var hashVal = parts[0].ToLowerInvariant();
+            if (hashVal.Length != 64 || hashVal.Any(c => !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))))
+                continue;
+            result[parts[1].TrimStart('*')] = hashVal;
+        }
+        return result;
+    }
+
+    private static void VerifyChecksum(string filePath, string expectedHash)
+    {
+        using var sha256 = SHA256.Create();
+        using var fs = File.OpenRead(filePath);
+        var hashBytes = sha256.ComputeHash(fs);
+        var actual = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        if (actual != expectedHash.ToLowerInvariant())
+            throw new InvalidOperationException(
+                "Checksum verification failed!\n" +
+                $"  Expected: {expectedHash}\n" +
+                $"  Got:      {actual}\n" +
+                "  File may be corrupted or tampered with. " +
+                "Please retry or report at https://github.com/CloakHQ/cloakbrowser/issues");
+        CloakLog.Info("Checksum verified: SHA-256 OK");
+    }
+
+    private static async Task DownloadFileAsync(
+        string url, string dest, CancellationToken ct, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        CloakLog.Info("Downloading from {0}", url);
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        if (headers != null)
+        {
+            foreach (var kv in headers)
+                req.Headers.TryAddWithoutValidation(kv.Key, kv.Value);
+        }
+
+        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
+            .ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException(
+                $"Download failed: HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+
+        long total = resp.Content.Headers.ContentLength ?? 0;
+        long downloaded = 0;
+        int lastLoggedPct = -1;
+
+        await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using var fs = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None);
+        var buffer = new byte[8192];
+        int read;
+        while ((read = await src.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        {
+            await fs.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            downloaded += read;
+            if (total > 0)
+            {
+                int pct = (int)(downloaded / (double)total * 100);
+                if (pct >= lastLoggedPct + 10)
+                {
+                    lastLoggedPct = pct;
+                    CloakLog.Info("Download progress: {0}% ({1}/{2} MB)",
+                        pct, downloaded / (1024 * 1024), total / (1024 * 1024));
+                }
+            }
+        }
+
+        CloakLog.Info("Download complete: {0} MB", new FileInfo(dest).Length / (1024 * 1024));
+    }
+
+    private static void ExtractArchive(string archivePath, string destDir, string? binaryPath)
+    {
+        CloakLog.Info("Extracting to {0}", destDir);
+
+        // Clean existing dir if partial download existed.
+        if (Directory.Exists(destDir))
+            Directory.Delete(destDir, recursive: true);
+
+        Directory.CreateDirectory(destDir);
+
+        if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            ExtractZip(archivePath, destDir);
+        else
+            ExtractTar(archivePath, destDir);
+
+        // If extracted into a single subdirectory, flatten it (but never .app bundles).
+        FlattenSingleSubdir(destDir);
+
+        var bp = binaryPath ?? Config.GetBinaryPath();
+        if (File.Exists(bp))
+            MakeExecutable(bp);
+
+        // macOS: remove quarantine/provenance xattrs to prevent Gatekeeper prompts.
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            RemoveQuarantine(destDir);
+
+        if (File.Exists(bp))
+            CloakLog.Info("Binary ready: {0}", bp);
+    }
+
+    /// <summary>
+    /// Resolves an archive entry to an absolute path under <paramref name="destinationDir"/>,
+    /// guarding against path-traversal / zip-slip. The combined path is normalized via
+    /// <see cref="Path.GetFullPath(string)"/> and must stay within the (also normalized)
+    /// destination directory - comparison accounts for a trailing directory separator and
+    /// uses <see cref="StringComparison.Ordinal"/>. Throws <see cref="InvalidOperationException"/>
+    /// (naming the offending entry) when the entry escapes the destination.
+    /// </summary>
+    internal static string ResolveSafeEntryPath(string destinationDir, string entryName)
+    {
+        var destFull = Path.GetFullPath(destinationDir);
+        // Ensure a trailing separator so a sibling like "<dest>foo" can't masquerade as
+        // being inside "<dest>".
+        var destPrefix = destFull.EndsWith(Path.DirectorySeparatorChar)
+            ? destFull
+            : destFull + Path.DirectorySeparatorChar;
+
+        var memberPath = Path.GetFullPath(Path.Combine(destFull, entryName));
+
+        if (!string.Equals(memberPath, destFull, StringComparison.Ordinal) &&
+            !memberPath.StartsWith(destPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Archive contains path traversal: {entryName}");
+        }
+
+        return memberPath;
+    }
+
+    private static void ExtractTar(string archivePath, string destDir)
+    {
+        using var fileStream = File.OpenRead(archivePath);
+        using var gzip = new GZipStream(fileStream, CompressionMode.Decompress);
+        using var reader = new TarReader(gzip);
+
+        TarEntry? entry;
+        while ((entry = reader.GetNextEntry()) != null)
+        {
+            // Allow symlinks - macOS .app bundles require them (Framework layout).
+            if (entry.EntryType is TarEntryType.SymbolicLink or TarEntryType.HardLink)
+            {
+                var linkTarget = entry.LinkName;
+                if (Path.IsPathRooted(linkTarget) || linkTarget.Split('/').Contains(".."))
+                {
+                    CloakLog.Warning("Skipping suspicious symlink: {0} -> {1}", entry.Name, linkTarget);
+                    continue;
+                }
+                var linkPath = Path.Combine(destDir, entry.Name);
+                Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
+                entry.ExtractToFile(linkPath, overwrite: true);
+                continue;
+            }
+
+            var memberPath = ResolveSafeEntryPath(destDir, entry.Name);
+
+            if (entry.EntryType == TarEntryType.Directory)
+            {
+                Directory.CreateDirectory(memberPath);
+                continue;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(memberPath)!);
+            entry.ExtractToFile(memberPath, overwrite: true);
+        }
+    }
+
+    private static void ExtractZip(string archivePath, string destDir)
+    {
+        using var zf = ZipFile.OpenRead(archivePath);
+        foreach (var info in zf.Entries)
+        {
+            // Validate every entry up-front; throws on any zip-slip attempt.
+            ResolveSafeEntryPath(destDir, info.FullName);
+        }
+        ZipFile.ExtractToDirectory(archivePath, destDir, overwriteFiles: true);
+    }
+
+    private static void FlattenSingleSubdir(string destDir)
+    {
+        var entries = Directory.GetFileSystemEntries(destDir);
+        if (entries.Length == 1 && Directory.Exists(entries[0]))
+        {
+            var subdir = entries[0];
+            var name = Path.GetFileName(subdir);
+            // Never flatten .app bundles - macOS needs the bundle structure.
+            if (name.EndsWith(".app", StringComparison.Ordinal))
+            {
+                CloakLog.Debug("Keeping .app bundle intact: {0}", name);
+                return;
+            }
+            CloakLog.Debug("Flattening single subdirectory: {0}", name);
+            foreach (var item in Directory.GetFileSystemEntries(subdir))
+            {
+                var target = Path.Combine(destDir, Path.GetFileName(item));
+                if (Directory.Exists(item))
+                    Directory.Move(item, target);
+                else
+                    File.Move(item, target);
+            }
+            Directory.Delete(subdir, recursive: true);
+        }
+    }
+
+    /// <summary>True when a cached, executable Pro binary exists for <paramref name="version"/>.</summary>
+    private static bool ProBinaryReady([NotNullWhen(true)] string? version)
+    {
+        if (string.IsNullOrEmpty(version)) return false;
+        var p = Config.GetBinaryPath(version, pro: true);
+        return File.Exists(p) && IsExecutable(p);
+    }
+
+    private static bool IsExecutable(string path) => Config.IsExecutableFile(path);
+
+    private static void MakeExecutable(string path)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
+        var mode = File.GetUnixFileMode(path);
+        File.SetUnixFileMode(path,
+            mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+    }
+
+    private static void RemoveQuarantine(string path)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("xattr")
+            {
+                ArgumentList = { "-cr", path },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var proc = Process.Start(psi);
+            proc?.WaitForExit(30000);
+            CloakLog.Debug("Removed quarantine attributes from {0}", path);
+        }
+        catch (Exception)
+        {
+            CloakLog.Debug("Failed to remove quarantine attributes");
+        }
+    }
+
+    /// <summary>Remove all cached binaries. Forces re-download on next launch.</summary>
+    public static void ClearCache()
+    {
+        var cacheDir = Config.GetCacheDir();
+        if (Directory.Exists(cacheDir))
+        {
+            Directory.Delete(cacheDir, recursive: true);
+            CloakLog.Info("Cache cleared: {0}", cacheDir);
+        }
+    }
+
+    /// <summary>
+    /// Return info about the current binary installation.
+    ///
+    /// <c>Tier</c> reflects what is actually installed on disk, not merely whether a
+    /// license is cached - a cached license with no Pro binary downloaded yet is still
+    /// effectively running the free binary, and the active key may differ from the
+    /// cached one.
+    /// </summary>
+    public static CloakBinaryInfo BinaryInfo(
+        string? browserVersion = null, string? releaseChannel = null)
+    {
+        // browserVersion (or CLOAKBROWSER_VERSION) pins the reported version so the
+        // info matches what a pinned launch actually runs, instead of latest.
+        var requested = Config.NormalizeRequestedVersion(browserVersion);
+        // Prefer Pro only if a Pro binary actually exists on disk. GetEffectiveVersion
+        // returns null for Pro when nothing is cached (it never falls back to free).
+        var proVersion = requested ?? Config.GetEffectiveVersion(
+            pro: true, releaseChannel: releaseChannel);
+        var pro = ProBinaryReady(proVersion);
+
+        string effective;
+        string binaryPath;
+        if (pro)
+        {
+            // pro == true implies proVersion is non-null (ProBinaryReady).
+            effective = proVersion!;
+            binaryPath = Config.GetBinaryPath(proVersion!, pro: true);
+        }
+        else
+        {
+            effective = requested ?? Config.GetEffectiveVersion()!;
+            binaryPath = Config.GetBinaryPath(effective);
+        }
+
+        return new CloakBinaryInfo(
+            Version: effective,
+            Tier: pro ? "pro" : "free",
+            BundledVersion: Config.ChromiumVersion,
+            Platform: Config.GetPlatformTag(),
+            BinaryPath: binaryPath,
+            Installed: File.Exists(binaryPath),
+            CacheDir: Config.GetBinaryDir(effective, pro: pro),
+            DownloadUrl: pro ? Config.GetProLatestDownloadUrl(releaseChannel) : Config.GetDownloadUrl(effective));
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-update
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Manually check for a newer Chromium version. Returns new version or null.
+    /// Unlike the background check in EnsureBinary, this blocks until complete.
+    /// </summary>
+    public static async Task<string?> CheckForUpdateAsync(CancellationToken ct = default)
+    {
+        var latest = await GetLatestChromiumVersionAsync(ct).ConfigureAwait(false);
+        if (latest == null) return null;
+        if (!Config.VersionNewer(latest, Config.GetChromiumVersion())) return null;
+
+        var binaryDir = Config.GetBinaryDir(latest);
+        if (Directory.Exists(binaryDir))
+        {
+            WriteVersionMarker(latest);
+            return latest;
+        }
+
+        CloakLog.Info("Downloading Chromium {0}...", latest);
+        await DownloadAndExtractAsync(latest, ct).ConfigureAwait(false);
+        WriteVersionMarker(latest);
+        return latest;
+    }
+
+    /// <summary>Synchronous convenience wrapper around <see cref="CheckForUpdateAsync"/>.</summary>
+    public static string? CheckForUpdate() => CheckForUpdateAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Move a Pro install to the selected channel's latest. Blocks until complete. Returns the
+    /// new version when a newer Pro build is downloaded or an already-cached newer build is
+    /// activated, else null (already up to date or the server could not be reached).
+    /// Requires a valid Pro license key.
+    /// </summary>
+    public static async Task<string?> CheckForProUpdateAsync(
+        string licenseKey, CancellationToken ct = default, string? releaseChannel = null)
+    {
+        var latest = License.GetProLatestVersion(releaseChannel);
+        if (string.IsNullOrEmpty(latest)) return null;
+
+        var effective = Config.GetEffectiveVersion(pro: true, releaseChannel: releaseChannel);
+        if (effective != null && !Config.VersionNewer(latest, effective) && ProBinaryReady(effective))
+        {
+            // Already on the latest cached Pro build.
+            return null;
+        }
+
+        if (!ProBinaryReady(latest))
+        {
+            CloakLog.Info("Downloading Pro Chromium {0}...", latest);
+            await DownloadProBinaryAsync(latest, licenseKey, ct).ConfigureAwait(false);
+            var p = Config.GetBinaryPath(latest, pro: true);
+            if (!File.Exists(p))
+                throw new InvalidOperationException($"Pro download completed but binary not found at: {p}");
+        }
+
+        WriteProVersionMarker(latest, releaseChannel);
+        return latest;
+    }
+
+    /// <summary>Synchronous convenience wrapper around <see cref="CheckForProUpdateAsync"/>.</summary>
+    public static string? CheckForProUpdate(string licenseKey, string? releaseChannel = null) =>
+        CheckForProUpdateAsync(licenseKey, releaseChannel: releaseChannel).GetAwaiter().GetResult();
+
+    private static bool ShouldCheckForUpdate()
+    {
+        if ((Environment.GetEnvironmentVariable("CLOAKBROWSER_AUTO_UPDATE") ?? "").ToLowerInvariant() == "false")
+            return false;
+        if (Config.GetLocalBinaryOverride() != null) return false;
+        if (Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL") != null) return false;
+
+        var checkFile = Path.Combine(Config.GetCacheDir(), ".last_update_check");
+        if (File.Exists(checkFile))
+        {
+            try
+            {
+                var lastCheck = double.Parse(File.ReadAllText(checkFile).Trim(),
+                    System.Globalization.CultureInfo.InvariantCulture);
+                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+                if (now - lastCheck < UpdateCheckInterval)
+                    return false;
+            }
+            catch (Exception ex) when (ex is FormatException or IOException) { }
+        }
+        return true;
+    }
+
+    private static async Task<string?> GetLatestChromiumVersionAsync(CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{Config.GitHubApiUrl}?per_page=10";
+            using var resp = await Http.GetAsync(url, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var platformTarball = Config.GetArchiveName();
+            foreach (var release in doc.RootElement.EnumerateArray())
+            {
+                var tag = release.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                var draft = release.TryGetProperty("draft", out var d) && d.GetBoolean();
+                if (tag.StartsWith("chromium-v", StringComparison.Ordinal) && !draft)
+                {
+                    if (release.TryGetProperty("assets", out var assets))
+                    {
+                        foreach (var asset in assets.EnumerateArray())
+                        {
+                            if (asset.TryGetProperty("name", out var n) && n.GetString() == platformTarball)
+                                return tag["chromium-v".Length..];
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+        catch (Exception)
+        {
+            CloakLog.Debug("Auto-update check failed");
+            return null;
+        }
+    }
+
+    private static void WriteVersionMarker(string version)
+    {
+        var cacheDir = Config.GetCacheDir();
+        Directory.CreateDirectory(cacheDir);
+        var marker = Path.Combine(cacheDir, $"latest_version_{Config.GetPlatformTag()}");
+        var tmp = marker + ".tmp";
+        File.WriteAllText(tmp, version);
+        if (File.Exists(marker)) File.Delete(marker);
+        File.Move(tmp, marker);
+    }
+
+    /// <summary>
+    /// Check NuGet for a newer wrapper version and log an upgrade hint. Runs once per
+    /// process (gated by <see cref="_wrapperUpdateChecked"/> in MaybeTriggerUpdateCheck).
+    /// Faithful analog of Python's <c>_check_wrapper_update</c> (which queries PyPI):
+    /// uses the NuGet flat-container index (<c>.../v3-flatcontainer/{id}/index.json</c>),
+    /// takes the newest stable version, and warns if it's newer than the running wrapper.
+    /// </summary>
+    private static async Task CheckWrapperUpdateAsync()
+    {
+        if ((Environment.GetEnvironmentVariable("CLOAKBROWSER_AUTO_UPDATE") ?? "").ToLowerInvariant() == "false")
+            return;
+        if (Environment.GetEnvironmentVariable("CLOAKBROWSER_DOWNLOAD_URL") != null)
+            return;
+        try
+        {
+            using var resp = await Http.GetAsync(
+                "https://api.nuget.org/v3-flatcontainer/cloakbrowser/index.json").ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            var json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("versions", out var versions)
+                || versions.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return;
+
+            string? latestStable = null;
+            foreach (var ve in versions.EnumerateArray())
+            {
+                var v = ve.GetString();
+                if (string.IsNullOrEmpty(v) || v.Contains('-')) // skip prerelease (1.2.3-beta)
+                    continue;
+                if (latestStable == null || WrapperVersionNewer(v, latestStable))
+                    latestStable = v;
+            }
+
+            if (latestStable != null && WrapperVersionNewer(latestStable, CloakVersion.Version))
+                CloakLog.Warning(
+                    "Update available: CloakBrowser {0} -> {1}. Run: dotnet add package CloakBrowser",
+                    CloakVersion.Version, latestStable);
+        }
+        catch (Exception)
+        {
+            CloakLog.Debug("Wrapper update check failed");
+        }
+    }
+
+    /// <summary>Compare dotted wrapper (SemVer-ish) versions, e.g. "0.4.0" vs "0.3.32".</summary>
+    internal static bool WrapperVersionNewer(string a, string b)
+    {
+        static int[] Parts(string v) =>
+            v.Split('.').Select(p => int.TryParse(p, out var n) ? n : 0).ToArray();
+        var pa = Parts(a);
+        var pb = Parts(b);
+        int len = Math.Max(pa.Length, pb.Length);
+        for (int i = 0; i < len; i++)
+        {
+            int va = i < pa.Length ? pa[i] : 0;
+            int vb = i < pb.Length ? pb[i] : 0;
+            if (va != vb) return va > vb;
+        }
+        return false;
+    }
+
+    private static async Task CheckAndDownloadUpdateAsync()
+    {
+        try
+        {
+            var checkFile = Path.Combine(Config.GetCacheDir(), ".last_update_check");
+            Directory.CreateDirectory(Path.GetDirectoryName(checkFile)!);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            File.WriteAllText(checkFile, now.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            var platformVersion = Config.GetChromiumVersion();
+            var latest = await GetLatestChromiumVersionAsync(CancellationToken.None).ConfigureAwait(false);
+            if (latest == null) return;
+            if (!Config.VersionNewer(latest, platformVersion)) return;
+
+            if (Directory.Exists(Config.GetBinaryDir(latest)))
+            {
+                WriteVersionMarker(latest);
+                return;
+            }
+
+            CloakLog.Info("Newer Chromium available: {0} (current: {1}). Downloading in background...",
+                latest, platformVersion);
+            await DownloadAndExtractAsync(latest, CancellationToken.None).ConfigureAwait(false);
+            WriteVersionMarker(latest);
+            CloakLog.Info("Background update complete: Chromium {0} ready. Will use on next launch.", latest);
+        }
+        catch (Exception)
+        {
+            CloakLog.Debug("Background update failed");
+        }
+    }
+
+    private static void MaybeTriggerUpdateCheck()
+    {
+        // Wrapper update: once per process, not rate-limited.
+        if (!_wrapperUpdateChecked)
+        {
+            _wrapperUpdateChecked = true;
+            _ = Task.Run(CheckWrapperUpdateAsync);
+        }
+
+        // Binary update: rate-limited to once per hour.
+        if (!ShouldCheckForUpdate()) return;
+        _ = Task.Run(CheckAndDownloadUpdateAsync);
+    }
+}

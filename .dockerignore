@@ -1,0 +1,5 @@
+# Never let signing material enter a Docker build context / image.
+# The test image (test-infra/Dockerfile.test) uses selective COPY today, but
+# this is defense-in-depth against a future `COPY . .`.
+test-infra/signing/
+*.pem

@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Binary cache (downloaded chromium)
+.cloakbrowser/
+
+# Claude Code (private project context)
+CLAUDE.md
+.claude/
+
+# JavaScript / Node.js
+js/node_modules/
+js/dist/
+
+# Distribution
+*.tar.gz
+*.whl
+.beads
+result
+
+#Infra
+docs/
+test-infra/
+site/
+manager/
+
+managed-serve/
+
+publish.sh
+deploy.sh
+.env
+debug
+publish-docker.sh
+captures/
+runtime/
+data/
+exports/
+frontend/node_modules/
+frontend/dist/
+20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.antigravitycli
+.plans
+.pi
