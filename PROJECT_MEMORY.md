@@ -212,6 +212,8 @@ collected_at
 
 下一步：用户在保持运行的 CloakBrowser 窗口中点击“立即登录”并完成快手登录。登录过程不启用探针。登录后重新启动 `vpn` 探针，验证 `pcursor=1` 的第二页加载；随后实现多关键词任务、批量轻量评论查询、阈值过滤与 XLSX。
 
+最新运行状态：用户要求放弃刚才登录的账号身份。旧 `runtime/` 已完整删除，包括 Profile、Cookie、LocalStorage、缓存、历史和原始抓包；CloakBrowser 引擎缓存保留。程序已新增 `runtime/identity.json`，首次启动生成随机指纹种子并在同一身份生命周期内持久复用。当前已经生成全新指纹和空白 Profile，并打开 `https://www.kuaishou.com/?isHome=1&source=SEARCH`，等待用户登录另一个账号。
+
 ## 9. 决策日志
 
 - 2026-09-07：确认产品是快手 Web 统计专用程序，而不是外置采集脚本。
@@ -224,3 +226,4 @@ collected_at
 - 2026-09-08：确认搜索列表不含评论总数；评论总量字段为 GraphQL `commentListQuery → data.visionCommentList.commentCountV2`。
 - 2026-09-08：确认浏览器页面上下文可直接执行轻量 `commentListQuery`，最终批量方案无需逐个加载视频详情。
 - 2026-09-08：确认匿名搜索仅显示首屏 20 条；要采集大量结果，持久化 Profile 必须先登录快手。
+- 2026-09-08：按用户要求清除旧账号的完整本地浏览身份与原始抓包，生成新的持久化指纹种子和空白 Profile。

@@ -81,3 +81,7 @@ class Settings:
     def ensure_directories(self) -> None:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.captures_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def identity_file(self) -> Path:
+        return self.data_dir / "identity.json"

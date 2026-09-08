@@ -11,6 +11,7 @@ from urllib.parse import quote, urlsplit
 from backend.config import Settings
 
 from .network_probe import NetworkProbe, ProbeConfig, utc_now
+from .identity import load_or_create_identity
 
 logger = logging.getLogger("kuaishou.browser")
 
@@ -45,6 +46,7 @@ class BrowserProbeManager:
         self._page_url: str | None = None
         self._browser_started_at: str | None = None
         self._probe_started_at: str | None = None
+        self._fingerprint_seed: int | None = None
 
     async def _resolve_launcher(self) -> Callable[..., Any]:
         if self._launch_context is not None:
@@ -73,6 +75,8 @@ class BrowserProbeManager:
         self.settings.ensure_directories()
         try:
             launcher = await self._resolve_launcher()
+            identity = load_or_create_identity(self.settings.identity_file)
+            self._fingerprint_seed = identity.fingerprint_seed
             launch_options: dict[str, Any] = {
                 "user_data_dir": self.settings.profile_dir,
                 "headless": self.settings.headless,
@@ -83,7 +87,10 @@ class BrowserProbeManager:
                 "license_key": self.settings.license_key,
                 "release_channel": self.settings.release_channel,
                 "proxy": self.settings.proxy,
-                "args": ["--disable-dev-shm-usage"],
+                "args": [
+                    "--disable-dev-shm-usage",
+                    f"--fingerprint={identity.fingerprint_seed}",
+                ],
             }
             if not self.settings.headless:
                 launch_options["viewport"] = {
@@ -445,6 +452,7 @@ class BrowserProbeManager:
             "browser_locale": self.settings.browser_locale,
             "browser_timezone": self.settings.browser_timezone,
             "browser_geoip": self.settings.browser_geoip,
+            "fingerprint_seed": self._fingerprint_seed,
             "profile_dir": str(self.settings.profile_dir),
         }
         payload["probe"] = self._probe.status() if self._probe is not None else None
