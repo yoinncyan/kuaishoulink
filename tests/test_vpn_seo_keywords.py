@@ -1,7 +1,10 @@
+import csv
+
 from scripts.collect_vpn_seo_keywords import (
     classify_intent,
     normalize_keyword,
     refine,
+    write_kuaishou_tsv,
 )
 
 
@@ -77,3 +80,36 @@ def test_all_accelerator_terms_are_retained():
     }
     assert excluded == []
     assert all(row["recommended_for_kuaishou"] for row in refined)
+
+
+def test_kuaishou_tsv_contains_encoded_search_url(tmp_path):
+    rows = [
+        {
+            "keyword": "网络 加速器",
+            "topic": "网络加速",
+            "intent": "泛需求",
+            "priority": "B",
+            "platform_sensitive": False,
+            "source_count": 2,
+            "recommended_for_kuaishou": True,
+        },
+        {
+            "keyword": "不执行",
+            "topic": "其他",
+            "intent": "泛需求",
+            "priority": "C",
+            "platform_sensitive": False,
+            "source_count": 1,
+            "recommended_for_kuaishou": False,
+        },
+    ]
+    path = tmp_path / "keywords.tsv"
+    assert write_kuaishou_tsv(path, rows) == 2
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        output = list(csv.DictReader(handle, delimiter="\t"))
+    assert len(output) == 2
+    assert output[0]["keyword"] == "网络 加速器"
+    assert output[0]["encoded_keyword"] == "%E7%BD%91%E7%BB%9C%20%E5%8A%A0%E9%80%9F%E5%99%A8"
+    assert output[0]["search_url"].endswith(output[0]["encoded_keyword"])
+    assert output[0]["recommended_for_kuaishou"] == "true"
+    assert output[1]["recommended_for_kuaishou"] == "false"

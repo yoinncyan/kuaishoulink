@@ -504,6 +504,52 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> No
         writer.writerows(rows)
 
 
+def write_kuaishou_tsv(path: Path, refined: list[dict[str, Any]]) -> int:
+    """Write every refined keyword with its canonical Kuaishou search URL."""
+    selected = list(refined)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = [
+        "keyword_index",
+        "keyword",
+        "encoded_keyword",
+        "search_url",
+        "topic",
+        "intent",
+        "priority",
+        "platform_sensitive",
+        "recommended_for_kuaishou",
+        "source_count",
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=columns,
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for index, row in enumerate(selected, 1):
+            keyword = row["keyword"]
+            encoded = quote(keyword, safe="")
+            writer.writerow(
+                {
+                    "keyword_index": index,
+                    "keyword": keyword,
+                    "encoded_keyword": encoded,
+                    "search_url": f"https://www.kuaishou.com/search/{encoded}",
+                    "topic": row["topic"],
+                    "intent": row["intent"],
+                    "priority": row["priority"],
+                    "platform_sensitive": str(bool(row["platform_sensitive"])).lower(),
+                    "recommended_for_kuaishou": str(
+                        bool(row["recommended_for_kuaishou"])
+                    ).lower(),
+                    "source_count": row["source_count"],
+                }
+            )
+    return len(selected)
+
+
 def refine_existing(output_dir: Path) -> dict[str, Any]:
     """Re-run cleaning rules against the previously downloaded raw CSV."""
     raw_path = output_dir / "vpn_keywords_raw.csv"
@@ -731,12 +777,18 @@ def main() -> None:
     )
     parser.add_argument("--expand-limit", type=int, default=60)
     parser.add_argument("--refine-only", action="store_true")
+    parser.add_argument(
+        "--kuaishou-tsv",
+        type=Path,
+        default=Path("resources/keywords/vpn_kuaishou_search_keywords.tsv"),
+    )
     args = parser.parse_args()
     dataset = (
         refine_existing(args.output_dir)
         if args.refine_only
         else asyncio.run(collect(args.output_dir, max(0, args.expand_limit)))
     )
+    tsv_count = write_kuaishou_tsv(args.kuaishou_tsv, dataset["refined"])
     print(
         json.dumps(
             {
@@ -749,7 +801,8 @@ def main() -> None:
                     "excluded_count",
                     "source_count",
                 )
-            },
+            }
+            | {"kuaishou_tsv": str(args.kuaishou_tsv), "tsv_keyword_count": tsv_count},
             ensure_ascii=False,
             indent=2,
         )

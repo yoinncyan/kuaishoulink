@@ -262,8 +262,11 @@ research/seo/vpn-20260908/vpn_keywords_refined.csv
 research/seo/vpn-20260908/vpn_keywords_excluded.csv
 research/seo/vpn-20260908/vpn_keywords_dataset.json
 outputs/vpn-seo-keywords-20260908/vpn_seo_keywords_20260908.xlsx
+resources/keywords/vpn_kuaishou_search_keywords.tsv
 ```
 
 工作簿包含 `提纯词库`、`原始词库`、`剔除记录` 三张工作表，已经通过重新导入、关键区域检查、公式错误扫描、三张表视觉渲染及 XLSX 压缩结构校验。
 
 后续集成：正式采集任务默认读取 `建议快手采集 = TRUE` 的 1,087 个词；用户可按主题、搜索意图、优先级和平台敏感标记缩小范围。
+
+TSV 集成决定：`resources/keywords/vpn_kuaishou_search_keywords.tsv` 是后续快手采集器的关键词输入文件。它包含全部 1,537 个提纯词，而不是只输出 1,087 个推荐子集；每行包含关键词、URL 编码词、完整 `https://www.kuaishou.com/search/{encoded_keyword}` 地址、主题、意图、优先级、平台敏感标记、推荐标记和来源数。文件为 UTF-8、LF、Tab 分隔，共 1,538 行（含表头），关键词无重复，106 个加速器词全部包含。

@@ -132,9 +132,20 @@ research/seo/vpn-20260908/
 
 outputs/vpn-seo-keywords-20260908/
 └── vpn_seo_keywords_20260908.xlsx
+
+resources/keywords/
+└── vpn_kuaishou_search_keywords.tsv
 ```
 
 当前结果：2,427 条原始记录、1,537 个提纯唯一词、1,087 个建议快手采集词、1,370 个长尾词。用户明确要求所有“加速器”相关词保留，当前共 106 个，剔除表中为 0 个。
+
+`vpn_kuaishou_search_keywords.tsv` 包含全部 1,537 个提纯词。每行提供 `keyword`、URL 编码后的 `encoded_keyword` 以及可直接导航的：
+
+```text
+https://www.kuaishou.com/search/{encoded_keyword}
+```
+
+TSV 同时保留主题、意图、优先级、平台敏感标记和 `recommended_for_kuaishou`，后续采集调度器直接读取此文件。
 
 重新抓取：
 
