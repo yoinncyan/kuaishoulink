@@ -214,6 +214,8 @@ collected_at
 
 最新运行状态：用户要求放弃刚才登录的账号身份。旧 `runtime/` 已完整删除，包括 Profile、Cookie、LocalStorage、缓存、历史和原始抓包；CloakBrowser 引擎缓存保留。程序已新增 `runtime/identity.json`，首次启动生成随机指纹种子并在同一身份生命周期内持久复用。当前已经生成全新指纹和空白 Profile，并打开 `https://www.kuaishou.com/?isHome=1&source=SEARCH`，等待用户登录另一个账号。
 
+全新身份匿名验证结果：未登录状态直接访问 `https://www.kuaishou.com/search/vpn` 正常，页面完整显示首屏 20 条；`POST /rest/v/search/feed` 返回 `result: 1`、`pcursor: "1"`，未出现 `risk-control` 或“网络异常”。因此旧异常与先前 Profile/账号会话状态相关，不是 CloakBrowser、CDP 探针或该搜索入口的固定故障。匿名状态仍受首屏 20 条和登录门槛限制。
+
 ## 9. 决策日志
 
 - 2026-09-07：确认产品是快手 Web 统计专用程序，而不是外置采集脚本。
@@ -227,3 +229,4 @@ collected_at
 - 2026-09-08：确认浏览器页面上下文可直接执行轻量 `commentListQuery`，最终批量方案无需逐个加载视频详情。
 - 2026-09-08：确认匿名搜索仅显示首屏 20 条；要采集大量结果，持久化 Profile 必须先登录快手。
 - 2026-09-08：按用户要求清除旧账号的完整本地浏览身份与原始抓包，生成新的持久化指纹种子和空白 Profile。
+- 2026-09-08：确认重置后的全新指纹/Profile 在未登录状态下可正常搜索 `vpn` 并取得 20 条视频，无风控响应。
