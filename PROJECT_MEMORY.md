@@ -198,9 +198,9 @@ collected_at
 - 用户确认的搜索入口：`https://www.kuaishou.com/search/vpn`，通用形式为 `https://www.kuaishou.com/search/{URL编码关键词}`。
 - 已确认搜索视频接口：`POST https://www.kuaishou.com/rest/v/search/feed`。
 - 首次请求 Body 结构：`keyword`、`page`、`webPageArea`、`pcursor`。
-- 当前全新 CloakBrowser Profile 收到 `Intercept-Result: risk-control;400002`，响应包含 `ANTICRAWL_COMMON` 安全验证地址；之后也出现 `risk-control;2`。
+- 首次未验证的 CloakBrowser Profile 曾收到 `Intercept-Result: risk-control;400002`，响应包含 `ANTICRAWL_COMMON` 安全验证地址；之后也出现 `risk-control;2`。该身份后来已按用户要求删除。
 - `https://www.kuaishou.com/?isHome=1&source=SEARCH` 可以加载首页，但会显示拼图滑块安全验证。
-- 当前 Profile 的 `/rest/v/profile/get` 响应为 `result: 109`，尚未建立登录状态。
+- 首次未验证 Profile 的 `/rest/v/profile/get` 响应为 `result: 109`；该观察用于确认未登录判定。
 - 使用最新版普通 Chrome 的全新临时 Profile 做对照，同样收到搜索失败响应 `result: 2` 和“操作太快了，请稍微休息一下”。用户日常 Edge Profile 正常，因此关键差异更可能是已建立的 Cookie、登录状态与会话信誉，而不是 CDP 监听本身。
 - 当前使用 CloakBrowser wrapper 0.5.10、keyless Chromium 145；最新引擎需要 CloakBrowser 免费或付费 License Key，后续仍需做最新版对照。
 - 用户手动完成安全验证后，同一持久化 Profile 的搜索接口成功返回 `result: 1`、首屏 20 条视频。
@@ -208,13 +208,20 @@ collected_at
 - 评论总数来自 `POST /graphql`、`operationName: commentListQuery`、响应路径 `data.visionCommentList.commentCountV2`。真实样本 `3xrkgjnv59hha7u` 返回 1220；`3x9su263zefax89` 隔日从 745 增长至 747。
 - 已验证方案 B：在已通过验证的 CloakBrowser 页面上下文中使用原生 `fetch('/graphql')`，只请求 `commentCount/commentCountV2`，HTTP 200、无 `risk-control`，无需进入详情页或模拟动态签名。
 - 快手搜索页面左侧为导航栏，右侧大区域为搜索内容；滚轮必须发送到右侧内容区。自动滚动坐标当前按视口 `(72%, 72%)` 计算并分段发送可信 Wheel 事件。
-- 当前 Profile 仍未登录，`/rest/v/profile/get` 返回 `result: 109`。正确滚动到右侧内容底部后显示“想看更多视频，快去登录吧～”；匿名状态仅能使用首屏 20 条，继续分页需要登录。
+- 匿名 Profile 下 `/rest/v/profile/get` 返回 `result: 109`。正确滚动到右侧内容底部后显示“想看更多视频，快去登录吧～”；匿名状态仅能使用首屏 20 条，继续分页需要登录。
 
-下一步：用户在保持运行的 CloakBrowser 窗口中点击“立即登录”并完成快手登录。登录过程不启用探针。登录后重新启动 `vpn` 探针，验证 `pcursor=1` 的第二页加载；随后实现多关键词任务、批量轻量评论查询、阈值过滤与 XLSX。
+下一步：先以匿名首屏 20 条完成 P2 批量轻量评论查询、阈值过滤与 XLSX 的端到端冒烟验证；需要采集多页时，再登录一个正常账号并验证 `pcursor=1` 的第二页加载。登录过程不启用探针。
 
-最新运行状态：用户要求放弃刚才登录的账号身份。旧 `runtime/` 已完整删除，包括 Profile、Cookie、LocalStorage、缓存、历史和原始抓包；CloakBrowser 引擎缓存保留。程序已新增 `runtime/identity.json`，首次启动生成随机指纹种子并在同一身份生命周期内持久复用。当前已经生成全新指纹和空白 Profile，并打开 `https://www.kuaishou.com/?isHome=1&source=SEARCH`，等待用户登录另一个账号。
+最新身份状态：用户要求放弃刚才登录的账号身份。旧 `runtime/` 已完整删除，包括 Profile、Cookie、LocalStorage、缓存、历史和原始抓包；CloakBrowser 引擎缓存保留。程序已新增 `runtime/identity.json`，首次启动生成随机指纹种子并在同一身份生命周期内持久复用。当前为全新指纹和空白未登录 Profile。
 
 全新身份匿名验证结果：未登录状态直接访问 `https://www.kuaishou.com/search/vpn` 正常，页面完整显示首屏 20 条；`POST /rest/v/search/feed` 返回 `result: 1`、`pcursor: "1"`，未出现 `risk-control` 或“网络异常”。因此旧异常与先前 Profile/账号会话状态相关，不是 CloakBrowser、CDP 探针或该搜索入口的固定故障。匿名状态仍受首屏 20 条和登录门槛限制。
+
+本次检查点：
+
+- 本地 Git 分支：`main`。
+- 关键提交：`46c9c32`（网络探针/解析器/Web 面板）、`9797fb6`（持久化指纹与身份重置）、`33f133e`（匿名验证记录）。
+- 专项测试：15 项通过。
+- 本会话运行时：本地 Web 服务位于 `127.0.0.1:8080`；全新匿名浏览器当前打开 `/search/vpn`，探针已停止。进程状态属于临时状态，跨机器或进程重启后应以 `runtime/identity.json` 和 Profile 目录为准。
 
 ## 9. 决策日志
 
