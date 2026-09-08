@@ -1,0 +1,20 @@
+{
+  "data": {
+    "visionCommentList": {
+      "commentCount": null,
+      "commentCountV2": 1220,
+      "pcursor": null,
+      "rootCommentsV2": [
+        {
+          "commentId": "COMMENT_ID",
+          "authorName": "COMMENT_AUTHOR",
+          "content": "COMMENT_CONTENT"
+        }
+      ],
+      "pcursorV2": "NEXT_CURSOR",
+      "rootComments": [],
+      "__typename": "VisionRootCommentFeed"
+    }
+  }
+}
+

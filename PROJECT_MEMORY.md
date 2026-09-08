@@ -1,6 +1,6 @@
 # 快手 Web 视频统计工具：跨会话项目记忆
 
-最后更新：2026-09-07（Asia/Tokyo）
+最后更新：2026-09-08（Asia/Tokyo）
 
 ## 1. 产品目标
 
@@ -176,9 +176,41 @@ collected_at
 
 ## 8. 当前状态与下一步
 
-当前状态：正在建立本地 Git 仓库；尚未开始实现采集器或修改业务代码。
+当前状态：P0 网络探针、P1 搜索/评论响应解析器与最小 Web 控制面已经实现，并完成真实快手链路验证。
 
-下一步（需要用户明确开始指令）：实现 P0 网络探针，启动 CloakBrowser，让用户在真实快手页面完成登录和一次关键词搜索，然后分析捕获结果。
+已实现：
+
+- CDP `Network.*` 请求、响应和完整 Body 捕获。
+- Fetch/XHR、GraphQL operationName、WebSocket 帧记录。
+- Header、Cookie、Token、签名查询参数的默认脱敏。
+- 风控响应头 `Intercept-Result` 的识别与 Web 面板提示。
+- 单一持久化快手 Profile；浏览器与探针生命周期分离。
+- 快手登录入口、指定快手 URL 导航、重新加载、截图预览、探针启停 API。
+- React P0 Web 控制面及生产构建。
+- 相关离线单元/API 测试。
+- `/rest/v/search/feed` 成功响应解析为结构化视频记录。
+- GraphQL `commentListQuery` 的 `commentCountV2` 自动回填。
+- 评论内容数组在保存响应前剔除，只保留总数和游标。
+- 支持在快手页面上下文内直接轻量查询单个视频评论总数，无需打开详情页。
+
+真实探测结论：
+
+- 用户确认的搜索入口：`https://www.kuaishou.com/search/vpn`，通用形式为 `https://www.kuaishou.com/search/{URL编码关键词}`。
+- 已确认搜索视频接口：`POST https://www.kuaishou.com/rest/v/search/feed`。
+- 首次请求 Body 结构：`keyword`、`page`、`webPageArea`、`pcursor`。
+- 当前全新 CloakBrowser Profile 收到 `Intercept-Result: risk-control;400002`，响应包含 `ANTICRAWL_COMMON` 安全验证地址；之后也出现 `risk-control;2`。
+- `https://www.kuaishou.com/?isHome=1&source=SEARCH` 可以加载首页，但会显示拼图滑块安全验证。
+- 当前 Profile 的 `/rest/v/profile/get` 响应为 `result: 109`，尚未建立登录状态。
+- 使用最新版普通 Chrome 的全新临时 Profile 做对照，同样收到搜索失败响应 `result: 2` 和“操作太快了，请稍微休息一下”。用户日常 Edge Profile 正常，因此关键差异更可能是已建立的 Cookie、登录状态与会话信誉，而不是 CDP 监听本身。
+- 当前使用 CloakBrowser wrapper 0.5.10、keyless Chromium 145；最新引擎需要 CloakBrowser 免费或付费 License Key，后续仍需做最新版对照。
+- 用户手动完成安全验证后，同一持久化 Profile 的搜索接口成功返回 `result: 1`、首屏 20 条视频。
+- 搜索响应视频结构已确认：`feeds[].photo.id/caption/viewCount/likeCount` 与 `feeds[].author.id/name`；`feeds[].comment.us_c` 只是当前用户是否评论，不是评论总数。
+- 评论总数来自 `POST /graphql`、`operationName: commentListQuery`、响应路径 `data.visionCommentList.commentCountV2`。真实样本 `3xrkgjnv59hha7u` 返回 1220；`3x9su263zefax89` 隔日从 745 增长至 747。
+- 已验证方案 B：在已通过验证的 CloakBrowser 页面上下文中使用原生 `fetch('/graphql')`，只请求 `commentCount/commentCountV2`，HTTP 200、无 `risk-control`，无需进入详情页或模拟动态签名。
+- 快手搜索页面左侧为导航栏，右侧大区域为搜索内容；滚轮必须发送到右侧内容区。自动滚动坐标当前按视口 `(72%, 72%)` 计算并分段发送可信 Wheel 事件。
+- 当前 Profile 仍未登录，`/rest/v/profile/get` 返回 `result: 109`。正确滚动到右侧内容底部后显示“想看更多视频，快去登录吧～”；匿名状态仅能使用首屏 20 条，继续分页需要登录。
+
+下一步：用户在保持运行的 CloakBrowser 窗口中点击“立即登录”并完成快手登录。登录过程不启用探针。登录后重新启动 `vpn` 探针，验证 `pcursor=1` 的第二页加载；随后实现多关键词任务、批量轻量评论查询、阈值过滤与 XLSX。
 
 ## 9. 决策日志
 
@@ -187,3 +219,8 @@ collected_at
 - 2026-09-07：确认 SQLite 暂缓，先完成网络探测、数据解析和 XLSX 链路。
 - 2026-09-07：确认先做 P0 网络探针，再根据真实快手响应开发解析器。
 - 2026-09-07：确认最终产物为部署在服务器上的 Docker 服务，通过专用 Web 界面操作；不再以桌面 `.app/.dmg` 为交付目标。
+- 2026-09-07：确认搜索入口为 `https://www.kuaishou.com/search/{keyword}`，并通过真实 CDP 捕获定位到 `POST /rest/v/search/feed`。
+- 2026-09-07：确认全新 CloakBrowser 和普通 Chrome Profile 均可能触发快手反爬安全验证；产品必须保留一个可人工完成验证/登录的持久化 Profile。
+- 2026-09-08：确认搜索列表不含评论总数；评论总量字段为 GraphQL `commentListQuery → data.visionCommentList.commentCountV2`。
+- 2026-09-08：确认浏览器页面上下文可直接执行轻量 `commentListQuery`，最终批量方案无需逐个加载视频详情。
+- 2026-09-08：确认匿名搜索仅显示首屏 20 条；要采集大量结果，持久化 Profile 必须先登录快手。
