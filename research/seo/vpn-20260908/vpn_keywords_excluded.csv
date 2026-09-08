@@ -1,0 +1,96 @@
+﻿keyword,topic,intent,priority,rule_relevance,is_long_tail,platform_sensitive,recommended_for_kuaishou,source_count,sources,seed_terms,seed_categories,best_source_rank,raw_occurrences,variants,exclude_reason
+内网穿透 tailscale,企业网络,企业办公,C,39,False,False,False,1,Bing 中文联想,内网穿透,企业办公,11,1,内网穿透 tailscale,
+异地组网 zerotier,企业网络,企业办公,C,39,False,False,False,1,Bing 中文联想,异地组网,企业办公,10,1,异地组网 zerotier,
+异地组网app,企业网络,企业办公,C,39,False,False,False,1,百度联想,异地组网方案,二级扩展,9,1,异地组网app,
+ip地址购买是合法的吗,关联网络需求,选型购买,C,17,True,False,False,1,百度联想,住宅ip购买,二级扩展,1,1,ip地址购买是合法的吗,与VPN/跨境网络关联不足
+ip检测,关联网络需求,代理与IP,C,5,False,False,False,1,百度联想,住宅ip,代理IP,10,1,ip检测,与VPN/跨境网络关联不足
+sas eurobonus mastercard,关联网络需求,泛需求,C,10,True,False,False,1,Bing 中文联想,sase,企业办公,8,1,sas eurobonus mastercard,与VPN/跨境网络关联不足
+sasebo,企业网络,企业办公,C,20,False,False,False,3,Bing 中文联想、Google Web 联想、Google/YouTube 联想,sase,企业办公,3,3,sasebo,与VPN/跨境网络关联不足
+sasebo naval base,企业网络,企业办公,C,14,True,False,False,1,Google/YouTube 联想,sase,企业办公,4,1,sasebo naval base,与VPN/跨境网络关联不足
+sasec,企业网络,企业办公,C,6,False,False,False,1,Google/YouTube 联想,sase,企业办公,7,1,sasec,与VPN/跨境网络关联不足
+saseme怎么读,企业网络,企业办公,C,10,True,False,False,1,百度联想,sase,企业办公,8,1,saseme怎么读,与VPN/跨境网络关联不足
+sasenhoff钢琴多少钱一台,企业网络,企业办公,C,10,True,False,False,1,百度联想,sase,企业办公,9,1,sasenhoff钢琴多少钱一台,与VPN/跨境网络关联不足
+saseria,企业网络,企业办公,C,7,False,False,False,1,Google/YouTube 联想,sase,企业办公,6,1,saseria,与VPN/跨境网络关联不足
+saservice,企业网络,企业办公,C,8,False,False,False,1,Google Web 联想,sase,企业办公,5,1,saservice,与VPN/跨境网络关联不足
+sases,企业网络,企业办公,C,9,False,False,False,1,百度联想,sase,企业办公,4,1,sases,与VPN/跨境网络关联不足
+sasew,企业网络,企业办公,C,10,False,False,False,1,百度联想,sase,企业办公,3,1,sasew,与VPN/跨境网络关联不足
+sd wan interview questions and answers,关联网络需求,泛需求,C,10,True,False,False,1,Google/YouTube 联想,sd-wan,企业办公,10,1,sd wan interview questions and answers,与VPN/跨境网络关联不足
+sdwan fast,关联网络需求,泛需求,C,5,False,False,False,1,Bing 中文联想,sd-wan,企业办公,11,1,sdwan fast,与VPN/跨境网络关联不足
+sdwan和专线的区别,关联网络需求,科普原理,C,13,True,False,False,1,Bing 中文联想,sd-wan,企业办公,5,1,sdwan和专线的区别,与VPN/跨境网络关联不足
+sdwan怎么读,关联网络需求,配置排障,C,10,True,False,False,1,百度联想,sd-wan,企业办公,10,1,sdwan怎么读,与VPN/跨境网络关联不足
+sdwan技术原理,关联网络需求,科普原理,C,5,False,False,False,1,百度联想,sd-wan,企业办公,8,1,sdwan技术原理,与VPN/跨境网络关联不足
+sdwan是什么,关联网络需求,科普原理,C,14,True,False,False,1,Bing 中文联想,sd-wan,企业办公,4,1,sdwan是什么,与VPN/跨境网络关联不足
+sdwan网络是什么,关联网络需求,科普原理,C,12,True,False,False,1,百度联想,sd-wan,企业办公,6,1,sdwan网络是什么,与VPN/跨境网络关联不足
+sdwan设备是什么,关联网络需求,科普原理,C,11,True,False,False,1,百度联想,sd-wan,企业办公,7,1,sdwan设备是什么,与VPN/跨境网络关联不足
+sd网络用语的意思,关联网络需求,泛需求,C,10,True,False,False,1,百度联想,sd-wan,企业办公,9,1,sd网络用语的意思,与VPN/跨境网络关联不足
+sesame,关联网络需求,泛需求,C,5,False,False,False,1,Google Web 联想,sase,企业办公,10,1,sesame,与VPN/跨境网络关联不足
+tk直播网络,关联网络需求,泛需求,C,10,False,False,False,1,Google/YouTube 联想,跨境直播网络,跨境直播,3,1,tk直播网络,与VPN/跨境网络关联不足
+专线网络,关联网络需求,泛需求,C,9,False,False,False,1,Google/YouTube 联想,跨境专线网络,二级扩展,4,1,专线网络,与VPN/跨境网络关联不足
+两条宽带,关联网络需求,泛需求,C,9,False,False,False,1,Google/YouTube 联想,跨境网络,跨境外贸,4,1,两条宽带,与VPN/跨境网络关联不足
+中国网络环境,关联网络需求,泛需求,C,15,True,False,False,1,Google/YouTube 联想,海外网络环境,二级扩展,3,1,中国网络环境,与VPN/跨境网络关联不足
+代理上网,代理与IP,代理与IP,C,9,False,False,False,1,Google/YouTube 联想,代理服务器,代理IP,4,1,代理上网,与VPN/跨境网络关联不足
+代理客户端,代理与IP,下载安装,C,16,True,False,False,1,Google/YouTube 联想,代理服务器软件,二级扩展,2,1,代理客户端,与VPN/跨境网络关联不足
+代理搭建,代理与IP,配置排障,C,11,False,False,False,1,Google/YouTube 联想,代理服务器搭建,二级扩展,2,1,代理搭建,与VPN/跨境网络关联不足
+代理端口,代理与IP,代理与IP,C,12,False,False,False,1,Google/YouTube 联想,代理服务器拒绝连接,二级扩展,1,1,代理端口,与VPN/跨境网络关联不足
+住宅 ip,关联网络需求,代理与IP,C,11,False,False,False,1,百度联想,住宅ip购买,二级扩展,2,1,住宅 IP,与VPN/跨境网络关联不足
+关联店铺涉嫌售假怎么解除,关联网络需求,配置排障,C,10,True,False,False,1,百度联想,多店铺防关联,跨境店群,10,1,关联店铺涉嫌售假怎么解除,与VPN/跨境网络关联不足
+关联店铺违规影响别的账号吗,关联网络需求,泛需求,C,10,True,False,False,1,百度联想,多店铺防关联,跨境店群,9,1,关联店铺违规影响别的账号吗,与VPN/跨境网络关联不足
+关联店铺违规怎么处理,关联网络需求,配置排障,C,14,True,False,False,1,百度联想,多店铺防关联,跨境店群,4,1,关联店铺违规怎么处理,与VPN/跨境网络关联不足
+关闭网络代理,代理与IP,配置排障,C,10,True,False,False,1,百度联想,代理服务器拒绝连接,二级扩展,10,1,关闭网络代理,与VPN/跨境网络关联不足
+加速节点,网络加速,代理与IP,C,11,False,True,False,1,Google/YouTube 联想,国际网络加速,跨境外贸,2,1,加速节点,与VPN/跨境网络关联不足
+国外服务器,关联网络需求,泛需求,C,17,True,False,False,1,Google/YouTube 联想,海外网络,跨境外贸,1,1,国外服务器,与VPN/跨境网络关联不足
+国际网络环境,关联网络需求,泛需求,C,10,True,False,False,1,百度联想,海外网络环境,二级扩展,10,1,国际网络环境,与VPN/跨境网络关联不足
+如何搭建软路由,关联网络需求,配置排障,C,14,True,False,False,1,Google/YouTube 联想,代理服务器搭建,二级扩展,4,1,如何搭建软路由,与VPN/跨境网络关联不足
+家庭网络搭建,关联网络需求,配置排障,C,14,True,False,False,1,Google/YouTube 联想,跨境网络搭建,二级扩展,4,1,家庭网络搭建,与VPN/跨境网络关联不足
+山东万事达建筑钢品股份有限公司,关联网络需求,企业办公,C,10,True,False,False,1,Bing 中文联想,sd-wan,企业办公,12,1,山东万事达建筑钢品股份有限公司,与VPN/跨境网络关联不足
+店铺关联了有影响吗,关联网络需求,泛需求,C,12,True,False,False,1,百度联想,多店铺防关联,跨境店群,6,1,店铺关联了有影响吗,与VPN/跨境网络关联不足
+店铺关联怎么解除,关联网络需求,配置排障,C,13,True,False,False,1,百度联想,多店铺防关联,跨境店群,5,1,店铺关联怎么解除,与VPN/跨境网络关联不足
+店铺关联是什么意思,关联网络需求,科普原理,C,11,True,False,False,1,百度联想,多店铺防关联,跨境店群,7,1,店铺关联是什么意思,与VPN/跨境网络关联不足
+店铺被关联会被限制搜索吗,关联网络需求,泛需求,C,10,True,False,False,1,百度联想,多店铺防关联,跨境店群,8,1,店铺被关联会被限制搜索吗,与VPN/跨境网络关联不足
+异地局域网组网方案,关联网络需求,企业办公,C,10,True,False,False,1,百度联想,异地组网方案,二级扩展,8,1,异地局域网组网方案,与VPN/跨境网络关联不足
+异地局域网组网软件,关联网络需求,企业办公,C,10,True,False,False,1,Bing 中文联想,异地组网软件,二级扩展,8,1,异地局域网组网软件,与VPN/跨境网络关联不足
+异地监控组网方案,关联网络需求,企业办公,C,11,True,False,False,1,Bing 中文联想,异地组网方案,二级扩展,7,1,异地监控组网方案,与VPN/跨境网络关联不足
+怎么搭建软路由,关联网络需求,配置排障,C,15,True,False,False,1,Google/YouTube 联想,代理服务器搭建,二级扩展,3,1,怎么搭建软路由,与VPN/跨境网络关联不足
+服务器代理,代理与IP,代理与IP,C,17,True,False,False,1,Google/YouTube 联想,代理服务器、代理服务器软件,二级扩展、代理IP,1,2,服务器代理,与VPN/跨境网络关联不足
+机场专线,关联网络需求,泛需求,C,9,False,True,False,1,Google/YouTube 联想,海外专线,跨境外贸,4,1,机场 专线,与VPN/跨境网络关联不足
+杀生,关联网络需求,泛需求,C,5,False,False,False,1,Google/YouTube 联想,sase,企业办公,10,1,杀生,与VPN/跨境网络关联不足
+独享ip购买,关联网络需求,选型购买,C,13,True,False,False,1,百度联想,独立ip购买,二级扩展,5,1,独享IP购买,与VPN/跨境网络关联不足
+独立ipo,关联网络需求,代理与IP,C,6,False,False,False,1,Bing 中文联想,独立ip,代理IP,7,1,独立ipo,与VPN/跨境网络关联不足
+独立ipo是什么意思,关联网络需求,科普原理,C,10,True,False,False,1,百度联想,独立ip,代理IP,8,1,独立ipo是什么意思,与VPN/跨境网络关联不足
+独立ipo还可以借壳吗,关联网络需求,代理与IP,C,12,True,False,False,1,百度联想,独立ip,代理IP,6,1,独立Ipo还可以借壳吗,与VPN/跨境网络关联不足
+独立ipv4,关联网络需求,代理与IP,C,5,False,False,False,1,Bing 中文联想,独立ip,代理IP,11,1,独立ipv4,与VPN/跨境网络关联不足
+独立公网ip购买,关联网络需求,选型购买,C,10,True,False,False,1,Bing 中文联想,独立ip购买,二级扩展,9,1,独立公网ip购买,与VPN/跨境网络关联不足
+空闲时间赚钱,关联网络需求,泛需求,C,17,True,False,False,1,Google/YouTube 联想,多店铺防关联,跨境店群,1,1,空闲时间赚钱,与VPN/跨境网络关联不足
+索艾森one3 写给20年后的自己,关联网络需求,泛需求,C,10,True,False,False,1,Google Web 联想,sase,企业办公,9,1,索艾森one3 写给20年后的自己,与VPN/跨境网络关联不足
+网络专线,关联网络需求,泛需求,C,12,False,False,False,1,Google/YouTube 联想,跨境专线网络、跨境网络专线,二级扩展,1,2,网络专线,与VPN/跨境网络关联不足
+网络中转,关联网络需求,泛需求,C,10,False,False,False,1,Google/YouTube 联想,跨境专线网络、跨境网络,二级扩展、跨境外贸,3,2,网络中转,与VPN/跨境网络关联不足
+网络搭建,关联网络需求,配置排障,C,10,False,False,False,1,Google/YouTube 联想,外贸网络搭建、跨境网络搭建,二级扩展,3,2,网络搭建,与VPN/跨境网络关联不足
+网络机顶盒,关联网络需求,泛需求,C,12,True,False,False,1,Google/YouTube 联想,跨境网络,跨境外贸,6,1,网络机顶盒,与VPN/跨境网络关联不足
+网络环境,关联网络需求,泛需求,C,12,False,False,False,1,Google/YouTube 联想,海外网络环境,二级扩展,1,1,网络环境,与VPN/跨境网络关联不足
+网络环境搭建,关联网络需求,配置排障,C,16,True,False,False,1,Google/YouTube 联想,跨境专线网络、跨境电商网络、跨境电商网络环境搭建、跨境网络搭建,二级扩展、跨境外贸,2,4,网络环境搭建,与VPN/跨境网络关联不足
+美国isp独立ip购买,关联网络需求,选型购买,C,10,True,False,False,1,百度联想,独立ip购买,二级扩展,8,1,美国ISP独立ip购买,与VPN/跨境网络关联不足
+萨安飒迩,关联网络需求,泛需求,C,5,False,False,False,1,百度联想,sase,企业办公,10,1,萨安飒迩,与VPN/跨境网络关联不足
+萨瑟,关联网络需求,泛需求,C,8,False,False,False,1,百度联想,sase,企业办公,5,1,萨瑟,与VPN/跨境网络关联不足
+萨瑟兰,关联网络需求,泛需求,C,22,False,False,False,4,Bing 中文联想、Google Web 联想、Google/YouTube 联想、百度联想,sase,企业办公,6,4,萨瑟兰,与VPN/跨境网络关联不足
+萨瑟兰 dia,关联网络需求,泛需求,C,5,False,False,False,1,Google/YouTube 联想,sase,企业办公,9,1,萨瑟兰 dia,与VPN/跨境网络关联不足
+萨瑟利尔庄园在哪,关联网络需求,泛需求,C,14,True,False,False,1,Bing 中文联想,sase,企业办公,4,1,萨瑟利尔庄园在哪,与VPN/跨境网络关联不足
+萨瑟利尔庄园的宴会邀请函,关联网络需求,泛需求,C,11,True,False,False,1,Bing 中文联想,sase,企业办公,7,1,萨瑟利尔庄园的宴会邀请函,与VPN/跨境网络关联不足
+萨瑟利尔的聚会,关联网络需求,泛需求,C,21,True,False,False,2,Bing 中文联想、Google Web 联想,sase,企业办公,2,2,萨瑟利尔的聚会,与VPN/跨境网络关联不足
+萨瑟利尔的聚会上保卫符文石,关联网络需求,泛需求,C,10,True,False,False,1,Bing 中文联想,sase,企业办公,12,1,萨瑟利尔的聚会上保卫符文石,与VPN/跨境网络关联不足
+萨瑟利尔聚会,关联网络需求,泛需求,C,10,True,False,False,1,Bing 中文联想,sase,企业办公,11,1,萨瑟利尔聚会,与VPN/跨境网络关联不足
+萨瑟恩,关联网络需求,泛需求,C,8,False,False,False,1,Bing 中文联想,sase,企业办公,5,1,萨瑟恩,与VPN/跨境网络关联不足
+虚拟服务器,关联网络需求,泛需求,C,16,True,False,False,1,Google/YouTube 联想,虚拟私人网络,VPN核心,2,1,虚拟服务器,与VPN/跨境网络关联不足
+购买ip是什么意思,关联网络需求,选型购买,C,14,True,False,False,1,百度联想,住宅ip购买,二级扩展,4,1,购买ip是什么意思,与VPN/跨境网络关联不足
+远程办公兼职,企业网络,企业办公,C,12,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,6,1,远程办公兼职,与VPN/跨境网络关联不足
+远程办公招聘,企业网络,企业办公,C,13,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,5,1,远程办公 招聘,与VPN/跨境网络关联不足
+远程办公的工作,企业网络,企业办公,C,10,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,9,1,远程办公的工作,与VPN/跨境网络关联不足
+远程办公英文,企业网络,企业办公,C,10,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,8,1,远程办公英文,与VPN/跨境网络关联不足
+远程办公软件哪个好用,企业网络,企业办公,C,14,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,4,1,远程办公软件哪个好用,与VPN/跨境网络关联不足
+远程办公靠谱吗,企业网络,企业办公,C,11,True,False,False,1,Bing 中文联想,远程办公vpn,企业办公,7,1,远程办公靠谱吗,与VPN/跨境网络关联不足
+静态ipv6,关联网络需求,代理与IP,C,5,False,False,False,1,Bing 中文联想,静态ip,代理IP,11,1,静态ipv6,与VPN/跨境网络关联不足
+ip-vpn インターネット,VPN核心,代理与IP,B,61,False,False,False,1,Bing 中文联想,独立ip vpn,二级扩展,7,1,ip-vpn インターネット,日文地区噪声
+ip-vpn インターネットvpn,VPN核心,代理与IP,B,65,True,False,False,1,Bing 中文联想,独立ip vpn,二级扩展,10,1,ip-vpn インターネットvpn,日文地区噪声
+ip-vpnとインターネットvpn,VPN核心,代理与IP,B,65,True,False,False,1,Bing 中文联想,独立ip vpn,二级扩展,9,1,ip-vpnとインターネットvpn,日文地区噪声
+海外iphone シャッター音,跨境与海外网络,跨境外贸,B,56,True,False,False,1,Google/YouTube 联想,海外ip,代理IP,4,1,海外iphone シャッター音,日文地区噪声
+海外ipとは,跨境与海外网络,跨境外贸,A,81,False,False,False,1,Bing 中文联想,海外ip,代理IP,12,1,海外ipとは,日文地区噪声
+海外ipアドレス,跨境与海外网络,跨境外贸,A,81,False,False,False,1,Bing 中文联想,海外ip,代理IP,11,1,海外ipアドレス,日文地区噪声

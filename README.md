@@ -118,6 +118,42 @@ P0 测试使用模拟 CDP 会话和脱敏响应，不访问快手：
 - P2：多关键词、自动滚动、评论阈值过滤、视频 ID 去重与 XLSX。
 - P3：noVNC 登录视图、访问认证、Docker 镜像与 Compose 部署。
 
+## VPN SEO 关键词词库
+
+已从 Google Web、Google/YouTube、Bing 中文、百度搜索联想及 5118 公开索引采集 VPN、跨境网络、外贸网络、代理 IP、企业组网和加速器相关词，并完成规范化、去重、分类和噪声剔除。
+
+```text
+research/seo/vpn-20260908/
+├── vpn_keywords_raw.csv
+├── vpn_keywords_refined.csv
+├── vpn_keywords_excluded.csv
+├── vpn_keywords_dataset.json
+└── errors.json
+
+outputs/vpn-seo-keywords-20260908/
+└── vpn_seo_keywords_20260908.xlsx
+```
+
+当前结果：2,427 条原始记录、1,537 个提纯唯一词、1,087 个建议快手采集词、1,370 个长尾词。用户明确要求所有“加速器”相关词保留，当前共 106 个，剔除表中为 0 个。
+
+重新抓取：
+
+```bash
+.venv/bin/python scripts/collect_vpn_seo_keywords.py \
+  --output-dir research/seo/vpn-20260908 \
+  --expand-limit 40
+```
+
+仅调整清洗规则后重新提纯，不访问外部词源：
+
+```bash
+.venv/bin/python scripts/collect_vpn_seo_keywords.py \
+  --output-dir research/seo/vpn-20260908 \
+  --refine-only
+```
+
+来源联想接口不提供可靠的统一搜索量，因此词库不虚构搜索量；`规则相关度`、`来源数`和`最佳来源排名`用于筛选，不等同于搜索量。
+
 ## 上游与许可证
 
 本仓库基于 [CloakHQ/CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 的 MIT wrapper 源码开发；原始上游说明保存在 [`UPSTREAM_README.md`](UPSTREAM_README.md)。CloakBrowser Chromium 二进制适用独立的 [`BINARY-LICENSE.md`](BINARY-LICENSE.md)，最终镜像和分发流程需遵守该许可证。
