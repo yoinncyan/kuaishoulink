@@ -83,6 +83,96 @@ SEEDS: list[tuple[str, str]] = [
     ("sase", "企业办公"),
 ]
 
+# Curated from the 65 real search-result rows in the user-provided
+# `快手视频链接.xlsx`. Promotional hashtags and creator names are excluded;
+# terms below describe recurring network problems, products, games or intent.
+VIDEO_DERIVED_SEEDS: list[tuple[str, str]] = [
+    ("苹果手机vpn设置", "快手样本-VPN设置"),
+    ("手机vpn设置", "快手样本-VPN设置"),
+    ("vpn速度慢", "快手样本-VPN排障"),
+    ("vpn节点超时", "快手样本-VPN排障"),
+    ("vpn原理", "快手样本-VPN科普"),
+    ("vpn修改", "快手样本-VPN设置"),
+    ("vpn违法吗", "快手样本-VPN法律"),
+    ("用vpn会被抓吗", "快手样本-VPN法律"),
+    ("翻墙违法吗", "快手样本-VPN法律"),
+    ("翻墙会被抓吗", "快手样本-VPN法律"),
+    ("vpn和翻墙的区别", "快手样本-VPN科普"),
+    ("vpn法律风险", "快手样本-VPN法律"),
+    ("vpn行政处罚", "快手样本-VPN法律"),
+    ("翻墙", "快手样本-关联表达"),
+    ("外网", "快手样本-关联表达"),
+    ("访问外网", "快手样本-关联表达"),
+    ("梯子", "快手样本-关联表达"),
+    ("网络用语梯子", "快手样本-关联表达"),
+    ("科学上网", "快手样本-关联表达"),
+    ("魔法上网", "快手样本-关联表达"),
+    ("境外网站", "快手样本-海外访问"),
+    ("国外软件不能用", "快手样本-海外访问"),
+    ("海外软件下载", "快手样本-海外访问"),
+    ("海外应用商店", "快手样本-海外访问"),
+    ("海外app下载", "快手样本-海外访问"),
+    ("锁国区", "快手样本-海外访问"),
+    ("国区限制", "快手样本-海外访问"),
+    ("tiktok网络环境异常", "快手样本-跨境平台"),
+    ("tiktok无网络连接", "快手样本-跨境平台"),
+    ("telegram一直连接中", "快手样本-跨境平台"),
+    ("telegram连接不上", "快手样本-跨境平台"),
+    ("shadowrocket连接不上", "快手样本-跨境平台"),
+    ("跨境电商网络环境", "快手样本-跨境电商"),
+    ("跨境电商网络环境搭建", "快手样本-跨境电商"),
+    ("虚拟局域网", "快手样本-网络技术"),
+    ("apn设置", "快手样本-移动网络"),
+    ("全球节点", "快手样本-节点"),
+    ("网络延迟卡顿", "快手样本-网络排障"),
+    ("游戏网络延迟", "快手样本-游戏网络"),
+    ("海外网络卡顿", "快手样本-海外访问"),
+    ("海外留学生网络卡顿", "快手样本-海外访问"),
+    ("校园网卡顿", "快手样本-校园网"),
+    ("校园网vpn", "快手样本-校园网"),
+    ("高ping", "快手样本-网络排障"),
+    ("随身wifi", "快手样本-移动网络"),
+    ("随身无线宽带", "快手样本-移动网络"),
+    ("上网卡", "快手样本-移动网络"),
+    ("手机卡上外网", "快手样本-移动网络"),
+    ("免费加速器", "快手样本-加速器"),
+    ("永久免费加速器", "快手样本-加速器"),
+    ("加速器测评", "快手样本-加速器"),
+    ("ios加速器测评", "快手样本-加速器"),
+    ("加速器排行榜", "快手样本-加速器"),
+    ("游戏加速器推荐", "快手样本-加速器"),
+    ("游戏加速器下载", "快手样本-加速器"),
+    ("加速器延迟高", "快手样本-加速器"),
+    ("加速器卡顿", "快手样本-加速器"),
+    ("加速器免费时长", "快手样本-加速器"),
+    ("加速器直装", "快手样本-加速器"),
+    ("国际服加速器", "快手样本-游戏加速"),
+    ("国际服下载加速", "快手样本-游戏加速"),
+    ("steam游戏加速器", "快手样本-游戏加速"),
+    ("pubg加速器", "快手样本-游戏加速"),
+    ("和平精英加速器", "快手样本-游戏加速"),
+    ("地铁逃生加速器", "快手样本-游戏加速"),
+    ("apex英雄加速器", "快手样本-游戏加速"),
+    ("对峙2加速器", "快手样本-游戏加速"),
+    ("荒野乱斗国际服加速器", "快手样本-游戏加速"),
+    ("氧化物生存岛加速器", "快手样本-游戏加速"),
+    ("三角洲日服加速器", "快手样本-游戏加速"),
+    ("球球大作战加速器", "快手样本-游戏加速"),
+    ("迅游加速器", "快手样本-加速器品牌"),
+    ("雷神加速器", "快手样本-加速器品牌"),
+    ("奇游手游加速器", "快手样本-加速器品牌"),
+    ("tt加速器", "快手样本-加速器品牌"),
+    ("火箭加速器", "快手样本-加速器品牌"),
+    ("主机游戏加速器", "快手样本-游戏加速"),
+    ("联机游戏加速器", "快手样本-游戏加速"),
+    ("手游加速器", "快手样本-游戏加速"),
+    ("手机游戏加速器", "快手样本-游戏加速"),
+    ("电脑游戏加速器", "快手样本-游戏加速"),
+]
+
+SEEDS.extend(VIDEO_DERIVED_SEEDS)
+VIDEO_DERIVED_WORDS = {word for word, _ in VIDEO_DERIVED_SEEDS}
+
 SOURCE_INFO = {
     "google_web": {
         "name": "Google Web 联想",
@@ -103,6 +193,10 @@ SOURCE_INFO = {
     "5118_index": {
         "name": "5118公开长尾词索引",
         "base_url": "https://www.5118.com/seo/newwords/",
+    },
+    "kuaishou_sample": {
+        "name": "快手视频样本词根",
+        "base_url": "快手视频链接.xlsx",
     },
 }
 
@@ -150,6 +244,9 @@ DIRECT_TERMS = (
     "wireguard",
     "ipsec",
     "ssl vpn",
+    "翻墙",
+    "科学上网",
+    "魔法上网",
 )
 CROSS_BORDER_TERMS = (
     "跨境",
@@ -176,6 +273,24 @@ RELATED_TERMS = (
     "防关联",
     "sd-wan",
     "sase",
+    "外网",
+    "telegram",
+    "shadowrocket",
+    "境外网站",
+    "国外软件",
+    "海外应用商店",
+    "国区限制",
+    "锁国区",
+    "虚拟局域网",
+    "apn设置",
+    "全球节点",
+    "网络延迟",
+    "网络卡顿",
+    "校园网",
+    "高ping",
+    "随身wifi",
+    "随身无线宽带",
+    "上网卡",
 )
 SENSITIVE_TERMS = (
     "翻墙",
@@ -323,6 +438,8 @@ def normalize_keyword(value: str) -> str:
         r"\1",
         text,
     )
+    text = re.sub(r"(?<=[a-z0-9])\s+(?=[\u4e00-\u9fff])", "", text, flags=re.I)
+    text = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[a-z0-9])", "", text, flags=re.I)
     return text.strip(" ,，。.!！?？:：;；-_")
 
 
@@ -499,7 +616,12 @@ def refine(raw_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[d
 
 def _write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=columns,
+            extrasaction="ignore",
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
@@ -696,12 +818,13 @@ async def collect(output_dir: Path, expand_limit: int) -> dict[str, Any]:
     # suggestion. Keeping it in Raw prevents useful business-adjacent terms from
     # disappearing when an engine returns no autocomplete rows.
     for seed, category in SEEDS:
+        from_video_sample = seed in VIDEO_DERIVED_WORDS
         raw_rows.append(
             {
                 "phase": "input",
-                "source": "project_seed",
-                "source_name": "项目种子词",
-                "source_url": "",
+                "source": "kuaishou_sample" if from_video_sample else "project_seed",
+                "source_name": "快手视频样本词根" if from_video_sample else "项目种子词",
+                "source_url": "快手视频链接.xlsx" if from_video_sample else "",
                 "seed": seed,
                 "seed_category": category,
                 "rank": 0,

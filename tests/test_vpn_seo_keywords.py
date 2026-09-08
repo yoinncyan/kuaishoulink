@@ -12,6 +12,7 @@ def test_keyword_normalization():
     assert normalize_keyword(" ＶＰＮ  软件 ") == "vpn软件"
     assert normalize_keyword("Open VPN 配置") == "openvpn配置"
     assert normalize_keyword("Wire Guard 教程") == "wireguard教程"
+    assert normalize_keyword("TikTok 网络") == "tiktok网络"
 
 
 def test_intent_classification():
@@ -113,3 +114,31 @@ def test_kuaishou_tsv_contains_encoded_search_url(tmp_path):
     assert output[0]["search_url"].endswith(output[0]["encoded_keyword"])
     assert output[0]["recommended_for_kuaishou"] == "true"
     assert output[1]["recommended_for_kuaishou"] == "false"
+
+
+def test_kuaishou_video_sample_terms_are_relevant():
+    rows = []
+    for keyword in (
+        "翻墙违法吗",
+        "telegram一直连接中",
+        "校园网卡顿",
+        "迅游加速器",
+    ):
+        rows.append(
+            {
+                "source": "kuaishou_sample",
+                "source_name": "快手视频样本词根",
+                "seed": keyword,
+                "seed_category": "快手样本",
+                "rank": 0,
+                "keyword": keyword,
+            }
+        )
+    refined, excluded = refine(rows)
+    assert {row["keyword"] for row in refined} == {
+        "翻墙违法吗",
+        "telegram一直连接中",
+        "校园网卡顿",
+        "迅游加速器",
+    }
+    assert excluded == []

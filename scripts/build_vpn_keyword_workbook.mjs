@@ -72,7 +72,7 @@ const refinedSheet = workbook.worksheets.add("提纯词库");
 writeTitle(
   refinedSheet,
   "VPN关键词及长尾词（提纯）",
-  `数据时间：${dataset.generated_at}。来源：Google Web、Google/YouTube、Bing中文、百度联想、5118公开索引。`,
+  `数据时间：${dataset.generated_at}。来源：Google Web、Google/YouTube、Bing中文、百度联想、快手视频样本词根、5118公开索引。`,
   "P",
 );
 

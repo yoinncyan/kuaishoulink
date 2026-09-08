@@ -137,9 +137,9 @@ resources/keywords/
 └── vpn_kuaishou_search_keywords.tsv
 ```
 
-当前结果：2,427 条原始记录、1,537 个提纯唯一词、1,087 个建议快手采集词、1,370 个长尾词。用户明确要求所有“加速器”相关词保留，当前共 106 个，剔除表中为 0 个。
+结合用户提供的 `快手视频链接.xlsx` 中 65 条真实视频样本反向扩词后，当前结果为：3,790 条原始记录、2,463 个提纯唯一词、1,774 个建议优先采集词、2,220 个长尾词。用户明确要求所有“加速器”相关词保留，当前共 473 个，剔除表中为 0 个。
 
-`vpn_kuaishou_search_keywords.tsv` 包含全部 1,537 个提纯词。每行提供 `keyword`、URL 编码后的 `encoded_keyword` 以及可直接导航的：
+`vpn_kuaishou_search_keywords.tsv` 包含全部 2,463 个提纯词。每行提供 `keyword`、URL 编码后的 `encoded_keyword` 以及可直接导航的：
 
 ```text
 https://www.kuaishou.com/search/{encoded_keyword}
