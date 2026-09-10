@@ -34,6 +34,8 @@ def test_search_and_comment_count_responses_are_merged():
     )
     assert len([event for event in events if event["data_kind"] == "search_video"]) == 2
     assert parser.status()["video_count"] == 2
+    assert parser.status()["search_feed_rows"] == 2
+    assert parser.status()["search_feed_rows"] == 2
     assert parser.status()["comment_count_resolved"] == 0
 
     events = parser.consume(
@@ -73,4 +75,3 @@ def test_comment_pagination_is_ignored_and_content_is_omitted():
     assert comment_feed["commentCountV2"] == 1220
     assert comment_feed["rootCommentsV2"] == {"omitted": True, "row_count": 1}
     assert "COMMENT_CONTENT" not in json.dumps(sanitized)
-

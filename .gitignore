@@ -27,6 +27,7 @@ Thumbs.db
 
 # Testing
 .pytest_cache/
+.playwright-mcp/
 .coverage
 htmlcov/
 
@@ -68,6 +69,10 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Local collection inputs and generated sampling results
+/快手视频链接.xlsx
+/outputs/kuaishou-anonymous-sample-*/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

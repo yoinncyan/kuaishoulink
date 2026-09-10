@@ -55,7 +55,10 @@ class Settings:
             data_dir=data_dir,
             profile_dir=data_dir / "profiles" / "kuaishou",
             captures_dir=data_dir / "captures",
-            headless=_env_bool("KUAISHOU_BROWSER_HEADLESS", False),
+            # Automated collection runs in the background so Chromium never
+            # steals desktop focus. Set the variable to false only for manual
+            # login/captcha diagnosis.
+            headless=_env_bool("KUAISHOU_BROWSER_HEADLESS", True),
             # Native values are the safest default.  An explicit override can
             # make timezone/locale disagree with the exit IP and trigger risk
             # controls.  When a proxy is configured, geoip can align them.

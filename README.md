@@ -9,7 +9,7 @@
 已经具备：
 
 - 单一持久化 CloakBrowser Profile；登录 Cookie 跨重启保留。
-- 直接打开 `https://www.kuaishou.com/search/{keyword}`。
+- 从快手首页搜索框输入关键词并点击“搜索”，不直接打开搜索 URL。
 - CDP `Network.*` 请求、响应及 Response Body 捕获。
 - Fetch/XHR、GraphQL operationName 和 WebSocket 帧记录。
 - 敏感 Header、Cookie、Token 和签名参数脱敏。
@@ -61,7 +61,8 @@ npm install
 npm run build
 cd ..
 
-.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8080
+KUAISHOU_BROWSER_HEADLESS=true \
+  .venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8080
 ```
 
 访问：<http://127.0.0.1:8080>
@@ -74,6 +75,41 @@ cd ..
 4. 点击“启动探针”。
 5. 在快手页面滚动，触发后续分页接口。
 6. 点击“停止并保存”。
+
+服务进程默认具备后台无窗口能力。Web 控制区中的“打开 CloakBrowser 窗口”开关默认开启，因此点击“开始/继续采集”时会显示窗口；需要边采集边使用电脑时关闭该开关即可。也可通过环境变量固定服务初始模式：
+
+```bash
+KUAISHOU_BROWSER_HEADLESS=false \
+  .venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8080
+```
+
+匿名交错采样默认每次间隔随机 6–12 秒，同一关键词每批随机连续 1–5 次，每个关键词累计 20 次。所有运行的新链接会持续合并到同一累计记录：
+
+```text
+runtime/sampling/master/deduped_links.json
+outputs/kuaishou-anonymous-sample-20260908/快手视频链接_累计去重总表.md
+```
+
+当前第一阶段范围已扩展为 TSV 全部 2,463 个关键词，总目标 49,260 次；前 10 个关键词已经完成的 200 次会从原检查点继续保留。Web 控制台显示“全部 2463 条”，用户点击“继续全部关键词采集”后才会启动剩余范围。
+
+Web 首页提供独立的批量任务控制区，无需再通过终端或对话操作：
+
+- **开始采集 / 继续采集**：自动选择最近的未完成检查点。
+- **暂停并保存**：向采样进程发送优雅暂停信号，保存关键词次数、去重链接和累计总表。
+- **深度重置身份**：仅在任务暂停时可用；删除浏览器 Profile、缓存和指纹身份，但保留全部采集记录。
+- **打开 CloakBrowser 窗口**：默认开启；关闭后任务在后台无窗口运行，不抢占桌面焦点。
+- **自动深度重置**：默认关闭；关闭时遇到真实搜索异常会保存并暂停，等待用户决定是否点击手动重置；开启后才会自动重置并续跑。
+- 页面实时显示总进度、当前关键词、当前词进度、本轮去重数和累计去重数。
+- 第一阶段完成后，“第二阶段 · 评论数量”面板可逐条查询 `commentListQuery`，实时显示完成比例、评论数大于/不大于 50 的数量、未解决错误及检查点位置，并支持独立开始/继续和暂停保存。
+
+对应接口为 `GET /api/task/status`、`POST /api/task/start`、`POST /api/task/pause` 和 `POST /api/task/reset-identity`。
+
+第二阶段检查点和最终 Markdown：
+
+```text
+runtime/comments/master-comment-counts.json
+outputs/kuaishou-anonymous-sample-20260908/快手视频评论数大于50_最终结果.md
+```
 
 捕获文件默认保存到：
 
@@ -92,7 +128,7 @@ runtime/captures/<会话 ID>/
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `KUAISHOU_DATA_DIR` | `./runtime` | Profile 和捕获数据根目录 |
-| `KUAISHOU_BROWSER_HEADLESS` | `false` | 是否使用无头浏览器 |
+| `KUAISHOU_BROWSER_HEADLESS` | `true` | 自动采集使用后台无窗口模式；设为 `false` 才显示人工操作窗口 |
 | `KUAISHOU_BROWSER_LOCALE` | 原生值 | 可选语言覆盖 |
 | `KUAISHOU_BROWSER_TIMEZONE` | 原生值 | 可选时区覆盖 |
 | `KUAISHOU_BROWSER_GEOIP` | 配置代理时开启 | 根据出口 IP 对齐语言和时区 |

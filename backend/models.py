@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ProbeStartRequest(BaseModel):
@@ -55,3 +55,35 @@ class BrowserScrollRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     distance: int = Field(default=1800, ge=100, le=20_000)
+
+
+class SamplingStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: Literal["search", "comments"] = "search"
+    limit: int = Field(default=10, ge=1, le=10_000)
+    loops: int = Field(default=20, ge=1, le=1_000)
+    min_interval: float = Field(default=6.0, ge=0.0, le=120.0)
+    max_interval: float = Field(default=12.0, ge=0.0, le=120.0)
+    max_consecutive: int = Field(default=5, ge=1, le=5)
+    max_attempts: int = Field(default=250, ge=1, le=100_000)
+    open_browser_window: bool = True
+    auto_reset_identity: bool = False
+    comment_min_interval: float = Field(default=1.5, ge=0.0, le=120.0)
+    comment_max_interval: float = Field(default=3.5, ge=0.0, le=120.0)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> "SamplingStartRequest":
+        if self.min_interval > self.max_interval:
+            raise ValueError("min_interval must be <= max_interval")
+        if self.comment_min_interval > self.comment_max_interval:
+            raise ValueError(
+                "comment_min_interval must be <= comment_max_interval"
+            )
+        return self
+
+
+class BrowserWindowModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    open_browser_window: bool = True

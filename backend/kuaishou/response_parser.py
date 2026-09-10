@@ -63,6 +63,7 @@ class KuaishouResponseParser:
         self.search_cursor: str | None = None
         self.successful_search_responses = 0
         self.failed_search_responses = 0
+        self.search_feed_rows = 0
         self.comment_responses = 0
 
     def consume(
@@ -87,6 +88,7 @@ class KuaishouResponseParser:
             self.failed_search_responses += 1
             return []
         self.successful_search_responses += 1
+        self.search_feed_rows += len(payload["feeds"])
         cursor = payload.get("pcursor")
         self.search_cursor = str(cursor) if cursor is not None else None
         events: list[dict[str, Any]] = []
@@ -196,6 +198,7 @@ class KuaishouResponseParser:
             "search_cursor": self.search_cursor,
             "successful_search_responses": self.successful_search_responses,
             "failed_search_responses": self.failed_search_responses,
+            "search_feed_rows": self.search_feed_rows,
             "comment_responses": self.comment_responses,
             "video_count": len(records),
             "comment_count_resolved": resolved,
@@ -220,4 +223,3 @@ def omit_comment_content(payload: Any) -> Any:
             sanitized_feed[key] = {"omitted": True, "row_count": len(rows)}
     copied["data"]["visionCommentList"] = sanitized_feed
     return copied
-

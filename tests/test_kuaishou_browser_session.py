@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
+from unittest.mock import patch
 
 import pytest
 
@@ -28,6 +30,8 @@ class FakePage:
         self.url = "about:blank"
         self.visited = []
         self.mouse = FakeMouse()
+        self.closed = False
+        self.search_value = ""
 
     async def goto(self, url, **kwargs):
         self.visited.append((url, kwargs))
@@ -42,9 +46,36 @@ class FakePage:
     async def wait_for_timeout(self, milliseconds):
         return None
 
+    def is_closed(self):
+        return self.closed
+
+    async def close(self):
+        self.closed = True
+        if self in self.context.pages:
+            self.context.pages.remove(self)
+
+    def get_by_role(self, role, name=None, exact=None):
+        return FakeLocator(self, role, name)
+
     async def evaluate(self, script, arg=None):
+        if self.closed:
+            raise RuntimeError("page has been closed")
         if "window.innerWidth" in script:
             return {"width": 1000, "height": 800}
+        if "checkLoginQuery" in script:
+            return {
+                "ok": True,
+                "status": 200,
+                "interceptResult": None,
+                "body": '{"data":{"checkLogin":false}}',
+            }
+        if "checkLoginQuery" in script:
+            return {
+                "ok": True,
+                "status": 200,
+                "interceptResult": None,
+                "body": '{"data":{"checkLogin":false}}',
+            }
         return {
             "ok": True,
             "status": 200,
@@ -66,12 +97,47 @@ class FakeMouse:
         self.wheels.append((delta_x, delta_y))
 
 
+class FakeLocator:
+    def __init__(self, page, role, name):
+        self.page = page
+        self.role = role
+        self.name = name
+
+    async def wait_for(self, **kwargs):
+        return None
+
+    async def click(self, **kwargs):
+        if self.role != "button":
+            return
+        if self.page.context.block_button_click:
+            raise RuntimeError("overlay intercepts pointer events")
+        self._open_result_page()
+
+    def _open_result_page(self):
+        result = FakePage(self.page.context)
+        result.url = "https://www.kuaishou.com/search/" + quote(
+            self.page.search_value, safe=""
+        )
+        self.page.context.pages.append(result)
+        callback = self.page.context.listeners.get("page")
+        if callback:
+            callback(result)
+
+    async def fill(self, value):
+        self.page.search_value = value
+
+    async def press(self, key):
+        if key == "Enter":
+            self._open_result_page()
+
+
 class FakeContext:
     def __init__(self):
         self.listeners = {}
         self.session = FakeCdpSession()
         self.pages = []
         self.closed = False
+        self.block_button_click = False
         self.pages.append(FakePage(self))
 
     def on(self, event, callback):
@@ -109,6 +175,18 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
+def test_automated_browser_is_headless_by_default():
+    with patch.dict("os.environ", {}, clear=True):
+        assert Settings.from_env().headless is True
+
+
+def test_visible_browser_remains_an_explicit_debug_option():
+    with patch.dict(
+        "os.environ", {"KUAISHOU_BROWSER_HEADLESS": "false"}, clear=True
+    ):
+        assert Settings.from_env().headless is False
+
+
 def test_search_url_is_trimmed_and_encoded(tmp_path):
     manager = BrowserProbeManager(settings(tmp_path))
     assert manager.search_url(" vpn ") == "https://www.kuaishou.com/search/vpn"
@@ -134,9 +212,15 @@ async def test_manager_launches_persistent_profile_and_navigates(tmp_path):
     assert status["state"] == "running"
     assert status["browser_state"] == "running"
     assert status["page_url"] == "https://www.kuaishou.com/search/vpn"
+    assert status["search_navigation"]["verified"] is True
     assert launch_options["user_data_dir"] == tmp_path / "profiles" / "kuaishou"
     assert launch_options["headless"] is True
-    assert context.pages[0].visited[0][0] == "https://www.kuaishou.com/search/vpn"
+    home_page = next(page for page in context.pages if "isHome=1" in page.url)
+    assert [visit[0] for visit in home_page.visited] == [
+        "https://www.kuaishou.com/?isHome=1&source=SEARCH"
+    ]
+    assert home_page.search_value == "vpn"
+    assert status["search_navigation"]["mode"] == "home_search_form"
     assert "Network.requestWillBeSent" in context.session.listeners
 
     summary = await manager.stop()
@@ -145,6 +229,83 @@ async def test_manager_launches_persistent_profile_and_navigates(tmp_path):
     assert summary["event_counts"]["action"] >= 2
     await manager.close_browser()
     assert context.closed is True
+
+
+@pytest.mark.asyncio
+async def test_home_search_uses_enter_when_overlay_blocks_button(tmp_path):
+    context = FakeContext()
+    context.block_button_click = True
+
+    async def launcher(**kwargs):
+        return context
+
+    manager = BrowserProbeManager(settings(tmp_path), launch_context=launcher)
+    status = await manager.start("vpn")
+
+    assert status["page_url"] == "https://www.kuaishou.com/search/vpn"
+    assert status["search_navigation"]["mode"] == "home_search_form"
+    assert any(
+        event.get("action") == "home_search_click_blocked"
+        for event in status["probe"]["recent_events"]
+    )
+    await manager.stop()
+    await manager.close_browser()
+
+
+@pytest.mark.asyncio
+async def test_window_mode_can_switch_next_launch_from_headless_to_visible(tmp_path):
+    contexts = []
+    launches = []
+
+    async def launcher(**kwargs):
+        launches.append(kwargs)
+        context = FakeContext()
+        contexts.append(context)
+        return context
+
+    manager = BrowserProbeManager(settings(tmp_path), launch_context=launcher)
+    await manager.launch_browser()
+    assert launches[0]["headless"] is True
+
+    status = await manager.configure_window_mode(True)
+    assert contexts[0].closed is True
+    assert status["headless"] is False
+    assert status["open_browser_window"] is True
+
+    await manager.launch_browser()
+    assert launches[1]["headless"] is False
+    assert manager.status()["browser_window_open"] is True
+    await manager.close_browser()
+
+
+@pytest.mark.asyncio
+async def test_closed_visible_page_is_reported_stopped_and_relaunched(tmp_path):
+    contexts = []
+    launches = []
+
+    async def launcher(**kwargs):
+        launches.append(kwargs)
+        context = FakeContext()
+        contexts.append(context)
+        return context
+
+    manager = BrowserProbeManager(settings(tmp_path), launch_context=launcher)
+    await manager.navigate("https://www.kuaishou.com/?isHome=1&source=SEARCH")
+    identity_id = manager.status()["identity_id"]
+    contexts[0].pages[0].closed = True
+
+    status = manager.status()
+    assert status["browser_state"] == "stopped"
+    assert status["page_url"] is None
+
+    recovered = await manager.navigate(
+        "https://www.kuaishou.com/?isHome=1&source=SEARCH"
+    )
+    assert len(launches) == 2
+    assert contexts[0].closed is True
+    assert recovered["browser_state"] == "running"
+    assert recovered["identity_id"] == identity_id
+    await manager.close_browser()
 
 
 @pytest.mark.asyncio
@@ -167,6 +328,10 @@ async def test_login_browser_lifetime_is_independent_from_probe(tmp_path):
     direct = await manager.direct_comment_count("3x9su263zefax89")
     assert direct["comment_count"] == 745
     assert direct["transport_ok"] is True
+    login = await manager.check_login_status()
+    assert login["logged_in"] is False
+    login = await manager.check_login_status()
+    assert login["logged_in"] is False
     scroll = await manager.scroll_page(2000)
     assert scroll["scroll"]["target"] == "right-content-pane"
     assert context.pages[0].mouse.moves == [(720.0, 576.0)]
@@ -174,3 +339,55 @@ async def test_login_browser_lifetime_is_independent_from_probe(tmp_path):
     await manager.reload_page()
     await manager.close_browser()
     assert context.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reset_identity_removes_profile_and_generates_new_seed(tmp_path):
+    contexts = []
+    launch_options = []
+
+    async def launcher(**kwargs):
+        context = FakeContext()
+        contexts.append(context)
+        launch_options.append(kwargs)
+        return context
+
+    configured = settings(tmp_path)
+    manager = BrowserProbeManager(configured, launch_context=launcher)
+    await manager.open_login()
+    old_seed = manager.status()["fingerprint_seed"]
+    old_identity_id = manager.status()["identity_id"]
+    old_temp_dir = Path(manager.status()["browser_temp_dir"])
+    (old_temp_dir / "socket-cache").write_text("old-process-state")
+    (configured.profile_dir / "Default" / "Cache").mkdir(parents=True)
+    (configured.profile_dir / "Default" / "Cache" / "entry").write_text("cached")
+    assert configured.identity_file.exists()
+
+    status = await manager.reset_identity()
+
+    assert contexts[0].closed is True
+    assert len(contexts) == 2
+    assert status["browser_state"] == "running"
+    assert status["page_url"] == (
+        "https://www.kuaishou.com/?isHome=1&source=SEARCH"
+    )
+    assert status["identity_reset"]["old_fingerprint_seed"] == old_seed
+    assert status["identity_reset"]["new_fingerprint_seed"] != old_seed
+    assert status["identity_reset"]["mode"] == "deep"
+    assert status["identity_reset"]["old_identity_id"] == old_identity_id
+    assert status["identity_reset"]["new_identity_id"] != old_identity_id
+    assert status["identity_reset"]["process_restart_verified"] is True
+    assert status["identity_reset"]["tls_transport"]["tls_session_state"] == "purged"
+    assert (
+        status["identity_reset"]["tls_transport"]["tls_clienthello_profile"]
+        == "stable_browser_build"
+    )
+    assert "cookies_and_auth_tokens" in status["identity_reset"]["purged_scopes"]
+    assert not (configured.profile_dir / "Default" / "Cache" / "entry").exists()
+    assert not old_temp_dir.exists()
+    assert configured.identity_file.exists()
+    assert (configured.profile_dir / ".cloak-identity.json").exists()
+    assert (configured.data_dir / "identity-reset-audit.jsonl").exists()
+    assert launch_options[1]["args"][-1] == (
+        f"--fingerprint={status['identity_reset']['new_fingerprint_seed']}"
+    )

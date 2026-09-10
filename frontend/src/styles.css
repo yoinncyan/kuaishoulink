@@ -35,6 +35,8 @@ button:disabled { opacity: .38; cursor: not-allowed; }
 button.primary { background: #ff5d2e; border-color: #ff5d2e; color: white; font-weight: 700; }
 button.primary:hover:not(:disabled) { background: #ff7047; border-color: #ff7047; }
 button.danger { color: #ff8f8f; }
+button.warning { color: #ffd37a; border-color: #5f4a22; background: #241d10; }
+button.secondary { color: #8fd8ff; border-color: #28516a; background: #10212c; }
 
 main { max-width: 1520px; margin: 0 auto; padding: 32px 40px 64px; }
 
@@ -49,6 +51,40 @@ code { color: #d4d8df; background: #12161b; border: 1px solid #252a32; padding: 
 
 .panel { background: rgba(17, 20, 25, .9); border: 1px solid #252a32; border-radius: 14px; box-shadow: 0 18px 60px rgba(0, 0, 0, .22); }
 .hero { padding: 25px 27px; }
+.task-panel { margin-bottom: 16px; padding: 25px 27px; border-color: #3b342f; background: linear-gradient(135deg, rgba(32, 25, 22, .96), rgba(15, 19, 24, .94)); }
+.comment-task-panel { margin-bottom: 16px; padding: 25px 27px; border-color: #29414e; background: linear-gradient(135deg, rgba(13, 31, 41, .95), rgba(15, 19, 24, .94)); }
+.task-controls { display: flex; gap: 10px; margin-top: 22px; }
+.task-main-button { min-width: 132px; padding: 11px 17px; font-weight: 750; }
+.window-toggle { display: flex; align-items: center; gap: 11px; width: fit-content; margin-top: 16px; color: #d8dde4; cursor: pointer; }
+.window-toggle > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.toggle-track { position: relative; width: 42px; height: 24px; flex: 0 0 auto; border: 1px solid #3a424d; border-radius: 99px; background: #171b21; transition: 160ms ease; }
+.toggle-track > span { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #77808c; transition: 160ms ease; }
+.window-toggle > input:checked + .toggle-track { border-color: #ff7047; background: rgba(255, 93, 46, .24); }
+.window-toggle > input:checked + .toggle-track > span { left: 21px; background: #ff7047; box-shadow: 0 0 10px rgba(255, 93, 46, .6); }
+.window-toggle > input:disabled + .toggle-track { opacity: .45; }
+.window-toggle strong, .window-toggle small { display: block; }
+.window-toggle strong { font-size: 12px; }
+.window-toggle small { margin-top: 2px; color: #717a86; font-size: 10px; }
+.task-config-grid { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; margin-top: 18px; }
+.task-config-grid label { color: #89929e; font-size: 11px; }
+.task-config-grid input { margin-top: 6px; padding: 8px 10px; }
+.task-progress-grid { display: grid; grid-template-columns: 1.1fr 1.5fr 1.1fr 1fr 1fr; gap: 9px; margin-top: 14px; }
+.comment-stage-strip { display: flex; align-items: center; gap: 18px; margin-top: 10px; padding: 11px 14px; border: 1px solid #29414e; border-radius: 9px; color: #8b9eaa; background: rgba(16, 36, 47, .55); font-size: 11px; }
+.comment-stage-strip strong { margin-right: auto; color: #8fd8ff; }
+.comment-progress-track { height: 8px; margin-top: 18px; overflow: hidden; border: 1px solid #29414e; border-radius: 99px; background: #080d10; }
+.comment-progress-track > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #2489c5, #60d4ff); box-shadow: 0 0 12px rgba(65, 185, 244, .45); transition: width 300ms ease; }
+.comment-progress-summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 9px; margin-top: 10px; }
+.output-link { align-self: center; margin-left: auto; color: #8fd8ff; font-size: 12px; text-decoration: none; }
+.output-link:hover { text-decoration: underline; }
+.comment-errors { margin-top: 14px; overflow: hidden; border: 1px solid #4e3034; border-radius: 9px; background: rgba(55, 20, 25, .25); }
+.comment-errors > strong { display: block; padding: 10px 12px; color: #ff9fa9; font-size: 11px; }
+.comment-errors > div { display: grid; grid-template-columns: 180px 110px 80px minmax(0, 1fr); gap: 10px; padding: 8px 12px; border-top: 1px solid #3c292d; color: #b68f95; font-size: 11px; }
+.comment-errors > div span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-metric { min-width: 0; padding: 13px 14px; border: 1px solid #292f37; border-radius: 9px; background: rgba(8, 11, 14, .68); }
+.task-metric span { display: block; color: #707986; font-size: 10px; }
+.task-metric strong { display: block; margin-top: 6px; overflow: hidden; color: #eef1f5; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.task-footnote { display: flex; justify-content: space-between; gap: 16px; margin-top: 12px; color: #68717e; font: 11px ui-monospace, monospace; }
+.task-error { margin-top: 12px; padding: 9px 11px; border: 1px solid #572b32; border-radius: 8px; color: #ff9fa9; background: rgba(80, 24, 33, .17); font-size: 12px; }
 .start-form { margin-top: 24px; }
 .start-form label { display: block; margin-bottom: 8px; color: #bbc1ca; font-size: 13px; font-weight: 650; }
 .input-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; gap: 10px; }
@@ -62,6 +98,9 @@ input:focus { border-color: #ff7047; box-shadow: 0 0 0 3px rgba(255, 93, 46, .12
 .status-running span { background: #3bd17d; box-shadow: 0 0 11px #3bd17d; }
 .status-starting span, .status-stopping span { background: #ffbd3d; box-shadow: 0 0 11px #ffbd3d; }
 .status-error span { background: #ff4f61; box-shadow: 0 0 11px #ff4f61; }
+.status-pausing span { background: #ffbd3d; box-shadow: 0 0 11px #ffbd3d; }
+.status-paused span { background: #66a6ff; box-shadow: 0 0 11px #66a6ff; }
+.status-completed span { background: #3bd17d; box-shadow: 0 0 11px #3bd17d; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 16px 0; }
 .metric { padding: 17px 19px; }
@@ -116,4 +155,6 @@ td { max-width: 320px; border-top: 1px solid #22272e; color: #b7bec8; padding: 9
 @media (max-width: 1120px) {
   main { padding-left: 24px; padding-right: 24px; }
   .workspace-grid { grid-template-columns: 1fr; }
+  .task-progress-grid { grid-template-columns: repeat(3, 1fr); }
+  .comment-progress-summary { grid-template-columns: repeat(3, 1fr); }
 }

@@ -14,10 +14,14 @@ def test_health_and_initial_probe_status():
         assert status.json()["state"] == "stopped"
         assert status.json()["probe"] is None
 
+        task = client.get("/api/task/status")
+        assert task.status_code == 200
+        assert "state" in task.json()
+        assert "master_unique_links" in task.json()
+
 
 def test_frontend_is_served_when_built():
     with TestClient(app) as client:
         response = client.get("/")
         assert response.status_code == 200
         assert "快手网络探针" in response.text
-

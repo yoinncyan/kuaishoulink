@@ -2,6 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type Counts = Record<string, number>;
 
+const FULL_KEYWORD_COUNT = 2463;
+
 type RecentEvent = {
   seq?: number;
   type?: string;
@@ -78,6 +80,87 @@ type SessionSummary = {
   started_at?: string;
 };
 
+type SamplingMetric = {
+  keyword: string;
+  completed_rounds?: number;
+  attempted_rounds?: number;
+  successful_rounds: number;
+  failed_rounds: number;
+  unique_videos: number;
+};
+
+type SamplingProgress = {
+  phase?: string;
+  event?: string;
+  current_keyword?: string;
+  current_keyword_position?: number;
+  keyword_count?: number;
+  current_completed_rounds?: number;
+  target_search_rounds?: number;
+  global_unique_links?: number;
+  total_identity_resets?: number;
+  updated_at?: string;
+  details?: Record<string, unknown>;
+};
+
+type SamplingStatus = {
+  state: "stopped" | "starting" | "running" | "pausing" | "paused" | "completed" | "error";
+  running: boolean;
+  pid?: number;
+  active_run_dir?: string;
+  started_at?: string;
+  ended_at?: string;
+  last_error?: string;
+  returncode?: number;
+  config: Record<string, number | boolean | string>;
+  progress: SamplingProgress | null;
+  metrics: SamplingMetric[];
+  run_unique_links: number;
+  master_unique_links: number;
+  keyword_library_count?: number;
+  comment_progress?: {
+    phase?: string;
+    event?: string;
+    stats?: {
+      source: number;
+      completed: number;
+      resolved: number;
+      qualified: number;
+      not_qualified: number;
+      unavailable: number;
+      failed_or_pending: number;
+      attempted_unresolved: number;
+    };
+    details?: Record<string, unknown>;
+    progress_percent?: number;
+    query_attempts?: number;
+    recent_errors?: Array<{
+      video_id: string;
+      status?: string;
+      attempts: number;
+      error?: string;
+      intercept_result?: string;
+      queried_at?: string;
+    }>;
+    checkpoint_path?: string;
+    output_path?: string;
+    updated_at?: string;
+  } | null;
+  log_tail: string[];
+};
+
+const initialSamplingStatus: SamplingStatus = {
+  state: "stopped",
+  running: false,
+  config: {},
+  progress: null,
+  metrics: [],
+  run_unique_links: 0,
+  master_unique_links: 0,
+  comment_progress: null,
+  log_tail: [],
+};
+
 const initialStatus: Status = {
   state: "stopped",
   probe_state: "stopped",
@@ -119,18 +202,30 @@ export default function App() {
   const [keyword, setKeyword] = useState("vpn");
   const [status, setStatus] = useState<Status>(initialStatus);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [taskStatus, setTaskStatus] = useState<SamplingStatus>(initialSamplingStatus);
   const [busy, setBusy] = useState(false);
+  const [taskBusy, setTaskBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [screenshotVersion, setScreenshotVersion] = useState(Date.now());
+  const [taskConfig, setTaskConfig] = useState({
+    loops: 20,
+    min_interval: 6,
+    max_interval: 12,
+    max_consecutive: 5,
+    open_browser_window: true,
+    auto_reset_identity: false,
+  });
 
   const refresh = useCallback(async () => {
     try {
-      const [nextStatus, nextSessions] = await Promise.all([
+      const [nextStatus, nextSessions, nextTaskStatus] = await Promise.all([
         api<Status>("/api/probe/status"),
         api<SessionSummary[]>("/api/probe/sessions"),
+        api<SamplingStatus>("/api/task/status"),
       ]);
       setStatus(nextStatus);
       setSessions(nextSessions);
+      setTaskStatus(nextTaskStatus);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -159,6 +254,98 @@ export default function App() {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function startTask() {
+    setTaskBusy(true);
+    setMessage("正在从检查点启动批量采集…");
+    try {
+      const next = await api<SamplingStatus>("/api/task/start", {
+        method: "POST",
+        body: JSON.stringify({
+          stage: "search",
+          limit: keywordLibraryCount,
+          loops: taskConfig.loops,
+          min_interval: taskConfig.min_interval,
+          max_interval: taskConfig.max_interval,
+          max_consecutive: taskConfig.max_consecutive,
+          max_attempts: 250,
+          open_browser_window: taskConfig.open_browser_window,
+          auto_reset_identity: taskConfig.auto_reset_identity,
+        }),
+      });
+      setTaskStatus(next);
+      setMessage("批量采集已开始，后续进度会自动保存到累计主记录。");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTaskBusy(false);
+    }
+  }
+
+  async function startCommentStage() {
+    setTaskBusy(true);
+    setMessage("正在启动第二阶段评论数量查询…");
+    try {
+      const next = await api<SamplingStatus>("/api/task/start", {
+        method: "POST",
+        body: JSON.stringify({
+          stage: "comments",
+          open_browser_window: taskConfig.open_browser_window,
+          auto_reset_identity: false,
+          comment_min_interval: 1.5,
+          comment_max_interval: 3.5,
+        }),
+      });
+      setTaskStatus(next);
+      setMessage("第二阶段已开始：正在逐条获取评论总数并筛选 > 50。");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTaskBusy(false);
+    }
+  }
+
+  async function pauseTask() {
+    setTaskBusy(true);
+    setMessage("正在暂停并写入检查点…");
+    try {
+      const next = await api<SamplingStatus>("/api/task/pause", {
+        method: "POST",
+        body: "{}",
+      });
+      setTaskStatus(next);
+      setMessage("批量采集已暂停，进度和累计链接均已保存。");
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTaskBusy(false);
+    }
+  }
+
+  async function resetTaskIdentity() {
+    const confirmed = window.confirm(
+      "深度重置会关闭浏览器并删除当前 Profile、Cookie、缓存和指纹身份；已采集链接与任务进度会保留。确定继续吗？",
+    );
+    if (!confirmed) return;
+    setTaskBusy(true);
+    setMessage("正在深度重置浏览器身份…");
+    try {
+      await api("/api/task/reset-identity", {
+        method: "POST",
+        body: JSON.stringify({ open_browser_window: taskConfig.open_browser_window }),
+      });
+      setMessage("浏览器身份已深度重置，采集记录和检查点未删除。");
+      setScreenshotVersion(Date.now());
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setTaskBusy(false);
     }
   }
 
@@ -232,6 +419,18 @@ export default function App() {
 
   const running = status.probe_state === "running" || status.probe_state === "starting";
   const browserRunning = status.browser_state === "running";
+  const taskRunning = taskStatus.state === "running" || taskStatus.state === "starting";
+  const taskPausing = taskStatus.state === "pausing";
+  const commentRunning = taskRunning && taskStatus.config.stage === "comments";
+  const commentsUpToDate =
+    taskStatus.comment_progress?.phase === "completed" &&
+    (taskStatus.comment_progress?.stats?.source ?? 0) >= taskStatus.master_unique_links;
+  const taskCompletedRounds = taskStatus.metrics.reduce(
+    (total, metric) => total + (metric.completed_rounds ?? metric.attempted_rounds ?? 0),
+    0,
+  );
+  const keywordLibraryCount = taskStatus.keyword_library_count || FULL_KEYWORD_COUNT;
+  const taskTargetRounds = keywordLibraryCount * taskConfig.loops;
   const counts = status.probe?.event_counts ?? {};
   const recent = useMemo(
     () => [...(status.probe?.recent_events ?? [])].reverse().slice(0, 40),
@@ -255,13 +454,253 @@ export default function App() {
         </div>
       </header>
 
+      <section className="task-panel panel">
+        <div className="panel-title-row">
+          <div>
+            <p className="section-label">批量采集控制</p>
+            <h2>开始、暂停和恢复都在这里完成</h2>
+            <p className="muted">
+              自动从快手首页搜索框触发搜索，按视频链接全局去重，并持续更新累计主记录。
+            </p>
+          </div>
+          <div className={`status status-${taskStatus.state}`}>
+            <span />TASK {taskStatus.state.toUpperCase()}
+          </div>
+        </div>
+
+        <div className="task-controls">
+          <button
+            type="button"
+            className="primary task-main-button"
+            disabled={taskRunning || taskPausing || taskBusy}
+            onClick={() => void startTask()}
+          >
+            {taskStatus.metrics.length ? "继续全部关键词采集" : "开始全部关键词采集"}
+          </button>
+          <button
+            type="button"
+            className="warning task-main-button"
+            disabled={!taskRunning || taskBusy}
+            onClick={() => void pauseTask()}
+          >
+            暂停并保存
+          </button>
+          <button
+            type="button"
+            className="danger task-main-button"
+            disabled={taskRunning || taskPausing || taskBusy}
+            onClick={() => void resetTaskIdentity()}
+          >
+            深度重置身份
+          </button>
+        </div>
+
+        <label className="window-toggle">
+          <input
+            type="checkbox"
+            checked={taskConfig.open_browser_window}
+            disabled={taskRunning || taskPausing || taskBusy}
+            onChange={(event) =>
+              setTaskConfig((value) => ({
+                ...value,
+                open_browser_window: event.target.checked,
+              }))
+            }
+          />
+          <span className="toggle-track"><span /></span>
+          <span>
+            <strong>打开 CloakBrowser 窗口</strong>
+            <small>默认开启；关闭后在后台运行，不抢占桌面焦点。</small>
+          </span>
+        </label>
+
+        <label className="window-toggle">
+          <input
+            type="checkbox"
+            checked={taskConfig.auto_reset_identity}
+            disabled={taskRunning || taskPausing || taskBusy}
+            onChange={(event) =>
+              setTaskConfig((value) => ({
+                ...value,
+                auto_reset_identity: event.target.checked,
+              }))
+            }
+          />
+          <span className="toggle-track"><span /></span>
+          <span>
+            <strong>自动深度重置</strong>
+            <small>默认关闭；关闭时遇到真实搜索异常会暂停，等待手动重置。</small>
+          </span>
+        </label>
+
+        <div className="task-config-grid">
+          <label>
+            关键词范围
+            <input value={`全部 ${keywordLibraryCount} 条`} readOnly />
+          </label>
+          <label>
+            每词总次数
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={taskConfig.loops}
+              disabled={taskRunning || taskPausing}
+              onChange={(event) => setTaskConfig((value) => ({ ...value, loops: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            最小间隔（秒）
+            <input
+              type="number"
+              min={0}
+              max={120}
+              value={taskConfig.min_interval}
+              disabled={taskRunning || taskPausing}
+              onChange={(event) => setTaskConfig((value) => ({ ...value, min_interval: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            最大间隔（秒）
+            <input
+              type="number"
+              min={0}
+              max={120}
+              value={taskConfig.max_interval}
+              disabled={taskRunning || taskPausing}
+              onChange={(event) => setTaskConfig((value) => ({ ...value, max_interval: Number(event.target.value) }))}
+            />
+          </label>
+          <label>
+            同词连续上限
+            <input
+              type="number"
+              min={1}
+              max={5}
+              value={taskConfig.max_consecutive}
+              disabled={taskRunning || taskPausing}
+              onChange={(event) => setTaskConfig((value) => ({ ...value, max_consecutive: Number(event.target.value) }))}
+            />
+          </label>
+        </div>
+
+        <div className="task-progress-grid">
+          <TaskMetric label="总进度" value={`${taskCompletedRounds}/${taskTargetRounds}`} />
+          <TaskMetric label="当前关键词" value={taskStatus.progress?.current_keyword ?? "—"} />
+          <TaskMetric
+            label="当前词进度"
+            value={`${taskStatus.progress?.current_completed_rounds ?? 0}/${taskStatus.progress?.target_search_rounds ?? taskConfig.loops}`}
+          />
+          <TaskMetric label="本轮去重" value={taskStatus.run_unique_links} />
+          <TaskMetric label="累计去重" value={taskStatus.master_unique_links} />
+        </div>
+
+        <div className="task-footnote">
+          <span>运行目录：{taskStatus.active_run_dir ?? "将在首次启动时创建"}</span>
+          <span>
+            下次启动：{taskConfig.open_browser_window ? "打开 CloakBrowser 窗口" : "后台无窗口模式"}
+          </span>
+        </div>
+        {taskStatus.progress?.event === "manual_reset_required" && (
+          <div className="task-error">
+            关键词“{taskStatus.progress.current_keyword ?? "未知"}”发生真实搜索异常：
+            {String(taskStatus.progress.details?.error ?? "接口返回失败")}
+            。任务已暂停，请点击“深度重置身份”后继续。
+          </div>
+        )}
+        {taskStatus.last_error && <div className="task-error">{taskStatus.last_error}</div>}
+      </section>
+
+      <section className="comment-task-panel panel">
+        <div className="panel-title-row">
+          <div>
+            <p className="section-label">第二阶段 · 评论数量</p>
+            <h2>逐条查询评论总数，筛选严格大于 50</h2>
+            <p className="muted">
+              只调用 GraphQL commentListQuery 获取总数，不打开视频详情，也不读取评论内容。
+            </p>
+          </div>
+          <div className={`status status-${taskStatus.comment_progress?.phase ?? "stopped"}`}>
+            <span />COMMENTS {(taskStatus.comment_progress?.phase ?? "NOT STARTED").toUpperCase()}
+          </div>
+        </div>
+
+        <div className="task-controls">
+          <button
+            type="button"
+            className="secondary task-main-button"
+            disabled={
+              taskRunning ||
+              taskPausing ||
+              taskBusy ||
+              commentsUpToDate ||
+              (!taskStatus.comment_progress && taskStatus.progress?.phase !== "completed")
+            }
+            onClick={() => void startCommentStage()}
+          >
+            {commentsUpToDate
+              ? "第二阶段已完成"
+              : taskStatus.comment_progress?.stats?.resolved
+                ? "继续第二阶段"
+                : "开始第二阶段"}
+          </button>
+          <button
+            type="button"
+            className="warning task-main-button"
+            disabled={!commentRunning || taskBusy}
+            onClick={() => void pauseTask()}
+          >
+            暂停第二阶段并保存
+          </button>
+          {!!taskStatus.comment_progress?.stats?.resolved && (
+            <a className="output-link" href="/api/task/comment-output" target="_blank" rel="noreferrer">
+              查看当前 Markdown
+            </a>
+          )}
+        </div>
+
+        <div className="comment-progress-track" aria-label="第二阶段进度">
+          <span style={{ width: `${taskStatus.comment_progress?.progress_percent ?? 0}%` }} />
+        </div>
+        <div className="comment-progress-summary">
+          <TaskMetric
+            label="查询进度"
+            value={`${taskStatus.comment_progress?.stats?.completed ?? taskStatus.comment_progress?.stats?.resolved ?? 0}/${taskStatus.comment_progress?.stats?.source ?? taskStatus.master_unique_links}`}
+          />
+          <TaskMetric label="完成百分比" value={`${taskStatus.comment_progress?.progress_percent ?? 0}%`} />
+          <TaskMetric label="评论数 > 50" value={taskStatus.comment_progress?.stats?.qualified ?? 0} />
+          <TaskMetric label="评论数 ≤ 50" value={taskStatus.comment_progress?.stats?.not_qualified ?? 0} />
+          <TaskMetric label="评论总数不可用" value={taskStatus.comment_progress?.stats?.unavailable ?? 0} />
+          <TaskMetric label="待处理/错误" value={taskStatus.comment_progress?.stats?.failed_or_pending ?? 0} />
+        </div>
+
+        <div className="task-footnote">
+          <span>检查点：{taskStatus.comment_progress?.checkpoint_path ?? "尚未创建"}</span>
+          <span>最后更新：{taskStatus.comment_progress?.updated_at ?? "—"}</span>
+        </div>
+
+        {!!taskStatus.comment_progress?.recent_errors?.length && (
+          <div className="comment-errors">
+            <strong>最近查询错误</strong>
+            {taskStatus.comment_progress.recent_errors.map((error) => (
+              <div key={`${error.video_id}-${error.queried_at}`}>
+                <code>{error.video_id}</code>
+                <span>{error.status ?? "query_failed"}</span>
+                <span>尝试 {error.attempts}</span>
+                <span title={error.error}>{error.intercept_result ?? error.error ?? "未返回评论数量"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="hero panel">
         <div>
           <p className="section-label">P0 · 接口发现</p>
           <h2>捕获搜索接口，不读取 DOM 业务数据</h2>
           <p className="muted">
-            入口固定为 <code>kuaishou.com/search/关键词</code>。探针在导航前连接 CDP，
-            记录请求、响应 Body、GraphQL operationName 与 WebSocket 帧。
+            搜索由首页输入框和“搜索”按钮真实触发。探针在点击前连接 CDP，
+            业务数据只读取请求、响应 Body、GraphQL operationName 与 WebSocket 帧。
           </p>
         </div>
         <form onSubmit={start} className="start-form">
@@ -482,6 +921,15 @@ function Metric({ label, value }: { label: string; value: string | number }) {
     <div className="metric panel">
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TaskMetric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="task-metric">
+      <span>{label}</span>
+      <strong title={String(value)}>{value}</strong>
     </div>
   );
 }

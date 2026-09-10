@@ -9,9 +9,11 @@ def test_identity_is_created_and_stable(tmp_path):
     second = load_or_create_identity(path)
 
     assert first == second
+    assert len(first.identity_id) == 32
     assert first.fingerprint_seed >= 10_000
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert payload["identity_id"] == first.identity_id
     assert payload["fingerprint_seed"] == first.fingerprint_seed
 
 
@@ -19,6 +21,6 @@ def test_invalid_identity_is_replaced(tmp_path):
     path = tmp_path / "identity.json"
     path.write_text('{"fingerprint_seed": 1, "created_at": "old"}')
     identity = load_or_create_identity(path)
+    assert len(identity.identity_id) == 32
     assert identity.fingerprint_seed >= 10_000
     assert identity.created_at != "old"
-
