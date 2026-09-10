@@ -68,8 +68,32 @@ type Status = {
   page_url?: string;
   last_error?: string;
   headless: boolean;
+  profile_id?: string;
+  profile_name?: string;
+  profile_count?: number;
+  profile_proxy_configured?: boolean;
   profile_dir: string;
   probe: Probe | null;
+};
+
+type BrowserProfile = {
+  profile_id: string;
+  name: string;
+  active: boolean;
+  proxy?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  last_used_at?: string | null;
+  profile_dir: string;
+  identity_id: string;
+  fingerprint_seed: string;
+  identity_created_at?: string;
+};
+
+type ProfileList = {
+  active_profile_id: string;
+  profile_count: number;
+  profiles: BrowserProfile[];
 };
 
 type SessionSummary = {
@@ -114,6 +138,7 @@ type SamplingStatus = {
   running: boolean;
   pid?: number;
   active_run_dir?: string;
+  active_run_profile_id?: string;
   started_at?: string;
   ended_at?: string;
   last_error?: string;
@@ -176,6 +201,12 @@ const initialStatus: Status = {
   probe: null,
 };
 
+const initialProfiles: ProfileList = {
+  active_profile_id: "",
+  profile_count: 0,
+  profiles: [],
+};
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -207,6 +238,11 @@ function shortUrl(value?: string): string {
 export default function App() {
   const [keyword, setKeyword] = useState("vpn");
   const [status, setStatus] = useState<Status>(initialStatus);
+  const [profiles, setProfiles] = useState<ProfileList>(initialProfiles);
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [newProfileName, setNewProfileName] = useState("");
+  const [newProfileProxy, setNewProfileProxy] = useState("");
+  const [profileBusy, setProfileBusy] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [taskStatus, setTaskStatus] = useState<SamplingStatus>(initialSamplingStatus);
   const [busy, setBusy] = useState(false);
@@ -230,14 +266,21 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextStatus, nextSessions, nextTaskStatus] = await Promise.all([
+      const [nextStatus, nextSessions, nextTaskStatus, nextProfiles] = await Promise.all([
         api<Status>("/api/probe/status"),
         api<SessionSummary[]>("/api/probe/sessions"),
         api<SamplingStatus>("/api/task/status"),
+        api<ProfileList>("/api/profiles"),
       ]);
       setStatus(nextStatus);
       setSessions(nextSessions);
       setTaskStatus(nextTaskStatus);
+      setProfiles(nextProfiles);
+      setSelectedProfileId((current) =>
+        current && nextProfiles.profiles.some((profile) => profile.profile_id === current)
+          ? current
+          : nextProfiles.active_profile_id,
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -248,6 +291,122 @@ export default function App() {
     const timer = window.setInterval(() => void refresh(), 1500);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  async function createProfile() {
+    const name = newProfileName.trim();
+    if (!name) {
+      setMessage("请输入新 Profile 名称。");
+      return;
+    }
+    setProfileBusy(true);
+    setMessage(`正在创建并切换到 Profile“${name}”…`);
+    try {
+      const result = await api<ProfileList & { browser: Status; created: BrowserProfile }>(
+        "/api/profiles",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            proxy: newProfileProxy.trim() || null,
+            activate: true,
+            open_browser_window: taskConfig.open_browser_window,
+          }),
+        },
+      );
+      setProfiles(result);
+      setStatus(result.browser);
+      setSelectedProfileId(result.created.profile_id);
+      setNewProfileName("");
+      setNewProfileProxy("");
+      setScreenshotVersion(Date.now());
+      setMessage(`Profile“${name}”已创建并隔离启动，请在新窗口登录对应账号。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function activateProfile() {
+    if (!selectedProfileId || selectedProfileId === profiles.active_profile_id) return;
+    const selected = profiles.profiles.find(
+      (profile) => profile.profile_id === selectedProfileId,
+    );
+    setProfileBusy(true);
+    setMessage(`正在切换到 Profile“${selected?.name ?? selectedProfileId}”…`);
+    try {
+      const next = await api<Status>(`/api/profiles/${selectedProfileId}/activate`, {
+        method: "POST",
+        body: JSON.stringify({ open_browser_window: taskConfig.open_browser_window }),
+      });
+      setStatus(next);
+      setScreenshotVersion(Date.now());
+      setMessage(`已切换到“${selected?.name ?? selectedProfileId}”，其账号、指纹和缓存独立加载。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function editSelectedProfile() {
+    const selected = profiles.profiles.find(
+      (profile) => profile.profile_id === selectedProfileId,
+    );
+    if (!selected) return;
+    const name = window.prompt("Profile 名称", selected.name);
+    if (name === null) return;
+    const proxy = window.prompt(
+      "独立代理 URL（留空表示不使用代理）",
+      selected.proxy ?? "",
+    );
+    if (proxy === null) return;
+    setProfileBusy(true);
+    try {
+      const result = await api<ProfileList & { updated: BrowserProfile }>(
+        `/api/profiles/${selected.profile_id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ name, proxy: proxy.trim() || null }),
+        },
+      );
+      setProfiles(result);
+      setMessage(`Profile“${result.updated.name}”已更新。代理变更将在该 Profile 下次启动时生效。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function deleteSelectedProfile() {
+    const selected = profiles.profiles.find(
+      (profile) => profile.profile_id === selectedProfileId,
+    );
+    if (!selected || selected.active) return;
+    const confirmed = window.confirm(
+      `删除 Profile“${selected.name}”会永久删除它的 Cookie、登录、指纹和缓存；累计链接不受影响。确定删除吗？`,
+    );
+    if (!confirmed) return;
+    setProfileBusy(true);
+    try {
+      const result = await api<ProfileList & { deleted: BrowserProfile }>(
+        `/api/profiles/${selected.profile_id}`,
+        { method: "DELETE" },
+      );
+      setProfiles(result);
+      setSelectedProfileId(result.active_profile_id);
+      setMessage(`Profile“${selected.name}”已删除，累计链接和其他 Profile 未改动。`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  }
 
   async function start(event: FormEvent) {
     event.preventDefault();
@@ -348,8 +507,9 @@ export default function App() {
   }
 
   async function resetTaskIdentity() {
+    const activeProfile = profiles.profiles.find((profile) => profile.active);
     const confirmed = window.confirm(
-      "深度重置会关闭浏览器并删除当前 Profile、Cookie、缓存和指纹身份；已采集链接与任务进度会保留。确定继续吗？",
+      `深度重置只会清空当前 Profile“${activeProfile?.name ?? "未知"}”的 Cookie、缓存和指纹身份；其他 Profile、累计链接和任务进度会保留。确定继续吗？`,
     );
     if (!confirmed) return;
     setTaskBusy(true);
@@ -451,7 +611,10 @@ export default function App() {
       ? activeCollectionMode
       : taskConfig.collection_mode;
   const loggedInFullScroll = selectedCollectionMode === "logged_in_full_scroll";
-  const selectedRunIsActive = activeCollectionMode === selectedCollectionMode;
+  const selectedRunIsActive =
+    activeCollectionMode === selectedCollectionMode &&
+    (taskStatus.active_run_profile_id ?? "kuaishou") ===
+      (profiles.active_profile_id || "kuaishou");
   const commentsUpToDate =
     taskStatus.comment_progress?.phase === "completed" &&
     (taskStatus.comment_progress?.stats?.source ?? 0) >= taskStatus.master_unique_links;
@@ -468,6 +631,11 @@ export default function App() {
     () => [...(status.probe?.recent_events ?? [])].reverse().slice(0, 40),
     [status.probe?.recent_events],
   );
+  const activeProfile = profiles.profiles.find((profile) => profile.active);
+  const selectedProfile = profiles.profiles.find(
+    (profile) => profile.profile_id === selectedProfileId,
+  );
+  const profileSwitchBlocked = taskRunning || taskPausing || running || profileBusy;
 
   return (
     <main>
@@ -485,6 +653,120 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <section className="profile-panel panel">
+        <div className="panel-title-row">
+          <div>
+            <p className="section-label">账号与浏览器 Profile</p>
+            <h2>多账号隔离与切换</h2>
+            <p className="muted">
+              每个 Profile 独立保存账号、Cookie、LocalStorage、浏览器缓存和指纹身份；采集进度按 Profile 隔离，链接继续汇总到同一累计去重总表。
+            </p>
+          </div>
+          <div className="profile-active-badge">
+            <span>当前 Profile</span>
+            <strong>{activeProfile?.name ?? "尚未加载"}</strong>
+          </div>
+        </div>
+
+        <div className="profile-selector-row">
+          <label>
+            选择 Profile
+            <select
+              value={selectedProfileId}
+              disabled={profileSwitchBlocked}
+              onChange={(event) => setSelectedProfileId(event.target.value)}
+            >
+              {profiles.profiles.map((profile) => (
+                <option key={profile.profile_id} value={profile.profile_id}>
+                  {profile.active ? "当前 · " : ""}{profile.name}
+                  {profile.proxy ? " · 独立代理" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            className="primary"
+            disabled={
+              profileSwitchBlocked ||
+              !selectedProfile ||
+              selectedProfile.profile_id === profiles.active_profile_id
+            }
+            onClick={() => void activateProfile()}
+          >
+            切换并打开
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={profileSwitchBlocked || !selectedProfile}
+            onClick={() => void editSelectedProfile()}
+          >
+            编辑名称/代理
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={
+              profileSwitchBlocked ||
+              !selectedProfile ||
+              selectedProfile.active ||
+              profiles.profile_count <= 1
+            }
+            onClick={() => void deleteSelectedProfile()}
+          >
+            删除所选
+          </button>
+        </div>
+
+        <div className="profile-summary-grid">
+          <TaskMetric label="Profile 数量" value={profiles.profile_count} />
+          <TaskMetric label="当前账号" value={activeProfile?.name ?? "—"} />
+          <TaskMetric
+            label="独立身份 ID"
+            value={activeProfile?.identity_id.slice(0, 12) ?? "—"}
+          />
+          <TaskMetric
+            label="独立代理"
+            value={activeProfile?.proxy ? "已配置" : "未配置"}
+          />
+        </div>
+
+        <div className="profile-create-row">
+          <label>
+            新 Profile 名称
+            <input
+              value={newProfileName}
+              maxLength={60}
+              placeholder="例如：账号二"
+              disabled={profileSwitchBlocked}
+              onChange={(event) => setNewProfileName(event.target.value)}
+            />
+          </label>
+          <label>
+            独立代理（可选）
+            <input
+              value={newProfileProxy}
+              placeholder="http://user:pass@HOST:PORT"
+              disabled={profileSwitchBlocked}
+              onChange={(event) => setNewProfileProxy(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            className="primary"
+            disabled={profileSwitchBlocked || !newProfileName.trim()}
+            onClick={() => void createProfile()}
+          >
+            新建并切换
+          </button>
+        </div>
+        <div className="task-footnote">
+          <span>Profile ID：{activeProfile?.profile_id ?? "—"}</span>
+          <span>切换前会关闭当前浏览器进程；其他 Profile 的目录和缓存不会被读取或清理。</span>
+        </div>
+      </section>
 
       <section className="task-panel panel">
         <div className="panel-title-row">

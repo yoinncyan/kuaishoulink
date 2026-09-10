@@ -1,4 +1,4 @@
-"""Persistent CloakBrowser fingerprint identity for the single Kuaishou profile."""
+"""Persistent CloakBrowser fingerprint identity for one isolated Profile."""
 
 from __future__ import annotations
 

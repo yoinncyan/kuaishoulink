@@ -18,7 +18,7 @@ body {
     #080a0d;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 
 button {
   border: 1px solid #2a3039;
@@ -51,6 +51,16 @@ code { color: #d4d8df; background: #12161b; border: 1px solid #252a32; padding: 
 
 .panel { background: rgba(17, 20, 25, .9); border: 1px solid #252a32; border-radius: 14px; box-shadow: 0 18px 60px rgba(0, 0, 0, .22); }
 .hero { padding: 25px 27px; }
+.profile-panel { margin-bottom: 16px; padding: 25px 27px; border-color: #3b3152; background: linear-gradient(135deg, rgba(30, 23, 43, .96), rgba(15, 19, 24, .94)); }
+.profile-active-badge { min-width: 170px; padding: 11px 14px; border: 1px solid #493b65; border-radius: 9px; background: rgba(51, 35, 74, .42); }
+.profile-active-badge span, .profile-active-badge strong { display: block; }
+.profile-active-badge span { color: #8d82a2; font-size: 10px; }
+.profile-active-badge strong { margin-top: 5px; color: #d9c5ff; font-size: 15px; }
+.profile-selector-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto auto; gap: 10px; align-items: end; margin-top: 20px; }
+.profile-selector-row label, .profile-create-row label { color: #958ca5; font-size: 11px; }
+.profile-selector-row select, .profile-create-row input { margin-top: 6px; }
+.profile-summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-top: 14px; }
+.profile-create-row { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 10px; align-items: end; margin-top: 14px; padding-top: 14px; border-top: 1px solid #30283d; }
 .task-panel { margin-bottom: 16px; padding: 25px 27px; border-color: #3b342f; background: linear-gradient(135deg, rgba(32, 25, 22, .96), rgba(15, 19, 24, .94)); }
 .comment-task-panel { margin-bottom: 16px; padding: 25px 27px; border-color: #29414e; background: linear-gradient(135deg, rgba(13, 31, 41, .95), rgba(15, 19, 24, .94)); }
 .task-controls { display: flex; gap: 10px; margin-top: 22px; }
@@ -91,8 +101,8 @@ code { color: #d4d8df; background: #12161b; border: 1px solid #252a32; padding: 
 .start-form { margin-top: 24px; }
 .start-form label { display: block; margin-bottom: 8px; color: #bbc1ca; font-size: 13px; font-weight: 650; }
 .input-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; gap: 10px; }
-input { width: 100%; border: 1px solid #303640; border-radius: 9px; color: white; background: #090b0e; padding: 11px 13px; outline: none; }
-input:focus { border-color: #ff7047; box-shadow: 0 0 0 3px rgba(255, 93, 46, .12); }
+input, select { width: 100%; border: 1px solid #303640; border-radius: 9px; color: white; background: #090b0e; padding: 11px 13px; outline: none; }
+input:focus, select:focus { border-color: #ff7047; box-shadow: 0 0 0 3px rgba(255, 93, 46, .12); }
 .message { margin-top: 15px; padding: 10px 12px; border-radius: 8px; background: #101923; color: #9cc8f7; font-size: 13px; }
 
 .status { display: flex; gap: 8px; align-items: center; border: 1px solid #303640; border-radius: 99px; padding: 8px 12px; color: #aab1bb; font: 700 11px ui-monospace, monospace; }

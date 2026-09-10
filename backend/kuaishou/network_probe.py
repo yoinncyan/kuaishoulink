@@ -138,6 +138,7 @@ def parse_post_data(raw: str | None, max_bytes: int) -> tuple[Any, list[str]]:
 class ProbeConfig:
     root_dir: Path
     keyword: str
+    profile_id: str = "kuaishou"
     max_body_bytes: int = 25 * 1024 * 1024
     max_post_data_bytes: int = 2 * 1024 * 1024
     body_resource_types: frozenset[str] = _BODY_RESOURCE_TYPES
@@ -205,6 +206,7 @@ class NetworkProbe:
             "schema_version": 1,
             "session_id": self.session_id,
             "keyword": self.config.keyword,
+            "profile_id": self.config.profile_id,
             "started_at": self.started_at,
             "recorder": "cdp-network",
             "max_body_bytes": self.config.max_body_bytes,
@@ -641,6 +643,7 @@ class NetworkProbe:
         return {
             "session_id": self.session_id,
             "keyword": self.config.keyword,
+            "profile_id": self.config.profile_id,
             "active": self.active,
             "started_at": self.started_at,
             "ended_at": self.ended_at,

@@ -114,8 +114,17 @@ class SamplingTaskManager:
         progress = self._read_json(run_dir / "progress.json") or {}
         return str(progress.get("collection_mode") or "anonymous_repeat")
 
+    def _run_profile_id(self, run_dir: Path) -> str:
+        scope = self._read_json(run_dir / "scope.json") or {}
+        if scope.get("profile_id"):
+            return str(scope["profile_id"])
+        progress = self._read_json(run_dir / "progress.json") or {}
+        return str(progress.get("profile_id") or "kuaishou")
+
     def _discover_resumable_run(
-        self, collection_mode: str | None = None
+        self,
+        collection_mode: str | None = None,
+        profile_id: str | None = None,
     ) -> Path | None:
         if not self.sampling_root.exists():
             return None
@@ -130,23 +139,34 @@ class SamplingTaskManager:
                         or self._run_collection_mode(progress_path.parent)
                         == collection_mode
                     )
+                    and (
+                        profile_id is None
+                        or self._run_profile_id(progress_path.parent) == profile_id
+                    )
                 ):
                     candidates.append((progress_path.stat().st_mtime, progress_path.parent))
             except (OSError, json.JSONDecodeError):
                 continue
         return max(candidates)[1] if candidates else None
 
-    def _new_run_dir(self, collection_mode: str = "anonymous_repeat") -> Path:
+    def _new_run_dir(
+        self,
+        collection_mode: str = "anonymous_repeat",
+        profile_id: str = "kuaishou",
+    ) -> Path:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         suffix_label = (
             "-logged-in"
             if collection_mode == "logged_in_full_scroll"
             else ""
         )
-        candidate = self.sampling_root / f"{stamp}{suffix_label}"
+        profile_label = "" if profile_id == "kuaishou" else f"-{profile_id}"
+        candidate = self.sampling_root / f"{stamp}{suffix_label}{profile_label}"
         suffix = 1
         while candidate.exists():
-            candidate = self.sampling_root / f"{stamp}{suffix_label}-{suffix}"
+            candidate = self.sampling_root / (
+                f"{stamp}{suffix_label}{profile_label}-{suffix}"
+            )
             suffix += 1
         return candidate
 
@@ -180,15 +200,21 @@ class SamplingTaskManager:
             collection_mode = str(
                 config.get("collection_mode") or "anonymous_repeat"
             )
+            profile_id = str(config.get("profile_id") or "kuaishou")
             run_dir = self._active_run_dir or self._discover_resumable_run()
             if (
                 stage == "search"
                 and run_dir is not None
-                and self._run_collection_mode(run_dir) != collection_mode
+                and (
+                    self._run_collection_mode(run_dir) != collection_mode
+                    or self._run_profile_id(run_dir) != profile_id
+                )
             ):
-                run_dir = self._discover_resumable_run(collection_mode)
+                run_dir = self._discover_resumable_run(
+                    collection_mode, profile_id
+                )
             if run_dir is None:
-                run_dir = self._new_run_dir(collection_mode)
+                run_dir = self._new_run_dir(collection_mode, profile_id)
             run_dir.mkdir(parents=True, exist_ok=True)
             if stage == "search":
                 scope_path = run_dir / "scope.json"
@@ -197,6 +223,8 @@ class SamplingTaskManager:
                     {
                         "schema_version": 2,
                         "collection_mode": collection_mode,
+                        "profile_id": profile_id,
+                        "profile_name": config.get("profile_name") or profile_id,
                         "keyword_file": str(self.keyword_file),
                         "keyword_count": int(config["limit"]),
                         "loops_per_keyword": 1
@@ -282,15 +310,25 @@ class SamplingTaskManager:
                     else config["max_interval"]
                 )
                 output_name = (
-                    "全部关键词_登录态全量滚动_累计去重结果.md"
+                    (
+                        "全部关键词_登录态全量滚动_累计去重结果.md"
+                        if profile_id == "kuaishou"
+                        else f"全部关键词_{profile_id}_登录态全量滚动_去重结果.md"
+                    )
                     if logged_in_scroll
-                    else "全部关键词_每词20次_累计去重结果.md"
+                    else (
+                        "全部关键词_每词20次_累计去重结果.md"
+                        if profile_id == "kuaishou"
+                        else f"全部关键词_{profile_id}_匿名多轮_去重结果.md"
+                    )
                 )
                 command = [
                     sys.executable,
                     str(script),
                     "--collection-mode",
                     collection_mode,
+                    "--profile-id",
+                    profile_id,
                     "--limit",
                     str(config["limit"]),
                     "--loops",
@@ -398,10 +436,12 @@ class SamplingTaskManager:
                     self._process.kill()
                     await self._process.wait()
 
-    def acknowledge_identity_reset(self) -> None:
+    def acknowledge_identity_reset(self, profile_id: str | None = None) -> None:
         """Mark the current failed keyword as manually reset and resumable."""
         run_dir = self._active_run_dir
         if run_dir is None:
+            return
+        if profile_id is not None and self._run_profile_id(run_dir) != profile_id:
             return
         progress_path = run_dir / "progress.json"
         progress = self._read_json(progress_path)
@@ -552,6 +592,9 @@ class SamplingTaskManager:
             "pid": self._process.pid if self.running and self._process else None,
             "active_run_dir": str(self._active_run_dir)
             if self._active_run_dir
+            else None,
+            "active_run_profile_id": self._run_profile_id(self._active_run_dir)
+            if self._active_run_dir is not None
             else None,
             "started_at": self._started_at,
             "ended_at": self._ended_at,

@@ -360,6 +360,43 @@ async def test_pause_during_probe_start_cannot_restore_stale_running_state(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_profile_switch_restarts_browser_with_isolated_identity(tmp_path):
+    contexts = []
+    launches = []
+
+    async def launcher(**kwargs):
+        launches.append(kwargs)
+        context = FakeContext()
+        contexts.append(context)
+        return context
+
+    manager = BrowserProbeManager(settings(tmp_path), launch_context=launcher)
+    await manager.open_login()
+    original = manager.status()
+    original_profile = Path(original["profile_dir"])
+    (original_profile / "Default" / "Cookies").parent.mkdir(parents=True)
+    (original_profile / "Default" / "Cookies").write_text("primary")
+
+    created = await manager.create_profile("备用账号", activate=True)
+    secondary = created["created"]
+    secondary_status = created["browser"]
+
+    assert contexts[0].closed is True
+    assert secondary_status["profile_id"] == secondary["profile_id"]
+    assert secondary_status["fingerprint_seed"] != original["fingerprint_seed"]
+    assert Path(secondary_status["profile_dir"]) != original_profile
+    assert launches[1]["user_data_dir"] == Path(secondary_status["profile_dir"])
+    assert (original_profile / "Default" / "Cookies").read_text() == "primary"
+
+    restored = await manager.activate_profile("kuaishou")
+    assert contexts[1].closed is True
+    assert restored["profile_id"] == "kuaishou"
+    assert restored["fingerprint_seed"] == original["fingerprint_seed"]
+    assert launches[2]["user_data_dir"] == original_profile
+    await manager.close_browser()
+
+
+@pytest.mark.asyncio
 async def test_login_browser_lifetime_is_independent_from_probe(tmp_path):
     context = FakeContext()
 
@@ -408,6 +445,10 @@ async def test_reset_identity_removes_profile_and_generates_new_seed(tmp_path):
 
     configured = settings(tmp_path)
     manager = BrowserProbeManager(configured, launch_context=launcher)
+    secondary = manager.profiles.create("备用账号")
+    secondary_dir = manager.profiles.profile_dir(secondary["profile_id"])
+    (secondary_dir / "Cache").mkdir()
+    (secondary_dir / "Cache" / "entry").write_text("secondary")
     await manager.open_login()
     old_seed = manager.status()["fingerprint_seed"]
     old_identity_id = manager.status()["identity_id"]
@@ -415,7 +456,8 @@ async def test_reset_identity_removes_profile_and_generates_new_seed(tmp_path):
     (old_temp_dir / "socket-cache").write_text("old-process-state")
     (configured.profile_dir / "Default" / "Cache").mkdir(parents=True)
     (configured.profile_dir / "Default" / "Cache" / "entry").write_text("cached")
-    assert configured.identity_file.exists()
+    identity_file = manager.profiles.identity_file("kuaishou")
+    assert identity_file.exists()
 
     status = await manager.reset_identity()
 
@@ -439,7 +481,11 @@ async def test_reset_identity_removes_profile_and_generates_new_seed(tmp_path):
     assert "cookies_and_auth_tokens" in status["identity_reset"]["purged_scopes"]
     assert not (configured.profile_dir / "Default" / "Cache" / "entry").exists()
     assert not old_temp_dir.exists()
-    assert configured.identity_file.exists()
+    assert identity_file.exists()
+    assert (secondary_dir / "Cache" / "entry").read_text() == "secondary"
+    assert manager.profiles.get(secondary["profile_id"])["identity_id"] == (
+        secondary["identity_id"]
+    )
     assert (configured.profile_dir / ".cloak-identity.json").exists()
     assert (configured.data_dir / "identity-reset-audit.jsonl").exists()
     assert launch_options[1]["args"][-1] == (

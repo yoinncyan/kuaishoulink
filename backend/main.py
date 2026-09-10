@@ -19,6 +19,9 @@ from backend.models import (
     BrowserNavigateRequest,
     BrowserScrollRequest,
     BrowserWindowModeRequest,
+    ProfileActivateRequest,
+    ProfileCreateRequest,
+    ProfileUpdateRequest,
     ProbeMarkRequest,
     ProbeStartRequest,
     SamplingStartRequest,
@@ -56,6 +59,78 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/profiles")
+async def list_profiles() -> dict:
+    return probe_manager.list_profiles()
+
+
+@app.post("/api/profiles")
+async def create_profile(request: ProfileCreateRequest) -> dict:
+    if request.activate and sampling_manager.running:
+        raise HTTPException(status_code=409, detail="请先暂停采集任务再创建并切换 Profile")
+    try:
+        return await probe_manager.create_profile(
+            request.name,
+            proxy=request.proxy,
+            activate=request.activate,
+            open_browser_window=request.open_browser_window,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch("/api/profiles/{profile_id}")
+async def update_profile(profile_id: str, request: ProfileUpdateRequest) -> dict:
+    fields = request.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="没有需要更新的 Profile 字段")
+    if (
+        sampling_manager.running
+        and profile_id == probe_manager.profiles.active_profile_id
+        and "proxy" in fields
+    ):
+        raise HTTPException(status_code=409, detail="请先暂停采集任务再修改当前 Profile 代理")
+    try:
+        return await probe_manager.update_profile(
+            profile_id,
+            name=fields.get("name"),
+            proxy=fields.get("proxy"),
+            update_proxy="proxy" in fields,
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+async def activate_profile(
+    profile_id: str, request: ProfileActivateRequest
+) -> dict:
+    if sampling_manager.running:
+        raise HTTPException(status_code=409, detail="请先暂停采集任务再切换 Profile")
+    try:
+        return await probe_manager.activate_profile(
+            profile_id, open_browser_window=request.open_browser_window
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def delete_profile(profile_id: str) -> dict:
+    try:
+        return await probe_manager.delete_profile(profile_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/probe/status")
 async def probe_status() -> dict:
     return probe_manager.status()
@@ -82,6 +157,9 @@ async def download_comment_output() -> FileResponse:
 async def start_sampling_task(request: SamplingStartRequest) -> dict:
     try:
         config = request.model_dump()
+        active_profile = probe_manager.profiles.active_profile()
+        config["profile_id"] = active_profile["profile_id"]
+        config["profile_name"] = active_profile["name"]
         await probe_manager.configure_window_mode(config["open_browser_window"])
         return await sampling_manager.start(config)
     except RuntimeError as exc:
@@ -109,7 +187,9 @@ async def reset_sampling_identity(request: BrowserWindowModeRequest) -> dict:
     try:
         await probe_manager.configure_window_mode(request.open_browser_window)
         browser = await probe_manager.reset_identity()
-        sampling_manager.acknowledge_identity_reset()
+        sampling_manager.acknowledge_identity_reset(
+            probe_manager.profiles.active_profile_id
+        )
         return {"ok": True, "browser": browser, "task": sampling_manager.status()}
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

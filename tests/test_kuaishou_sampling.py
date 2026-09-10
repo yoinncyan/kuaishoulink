@@ -134,10 +134,13 @@ def test_runtime_snapshot_records_deduped_links_and_resume_position(tmp_path):
 
     progress = json.loads((tmp_path / "progress.json").read_text())
     links = json.loads((tmp_path / "deduped_links.json").read_text())
+    aggregate_saved = json.loads((tmp_path / "aggregate.json").read_text())
     assert progress["current_keyword_position"] == 2
     assert progress["current_keyword"] == "vpn"
     assert progress["resume_from_round"] == 8
     assert progress["global_unique_links"] == 1
+    assert progress["profile_id"] == "kuaishou"
+    assert aggregate_saved["profile_id"] == "kuaishou"
     assert progress["schedule"] == {
         "min_interval_seconds": 6.0,
         "max_interval_seconds": 12.0,

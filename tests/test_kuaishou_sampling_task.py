@@ -1,11 +1,12 @@
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from backend.kuaishou.sampling_task import SamplingTaskManager
-from backend.models import SamplingStartRequest
+from backend.models import ProfileCreateRequest, SamplingStartRequest
 
 
 def test_sampling_status_restores_latest_paused_run_and_master_count(tmp_path):
@@ -49,6 +50,13 @@ def test_sampling_request_defaults_and_interval_validation():
         SamplingStartRequest(min_interval=13, max_interval=12)
     with pytest.raises(ValidationError):
         SamplingStartRequest(scroll_min_interval=4, scroll_max_interval=3)
+
+    profile = ProfileCreateRequest(
+        name="  账号 二  ", proxy="http://proxy.example:8080"
+    )
+    assert profile.name == "账号 二"
+    with pytest.raises(ValidationError):
+        ProfileCreateRequest(name="账号三", proxy="ftp://proxy.example")
 
 
 def test_manual_identity_reset_acknowledges_failed_keyword(tmp_path):
@@ -178,22 +186,35 @@ def test_resumable_runs_are_separate_for_anonymous_and_logged_in_modes(tmp_path)
     sampling = tmp_path / "sampling"
     anonymous = sampling / "anonymous-run"
     logged_in = sampling / "logged-run"
-    for directory, mode in (
-        (anonymous, "anonymous_repeat"),
-        (logged_in, "logged_in_full_scroll"),
+    second_profile = sampling / "second-profile-run"
+    for directory, mode, profile_id in (
+        (anonymous, "anonymous_repeat", "kuaishou"),
+        (logged_in, "logged_in_full_scroll", "kuaishou"),
+        (second_profile, "logged_in_full_scroll", "profile-account2"),
     ):
         directory.mkdir(parents=True)
         (directory / "progress.json").write_text(
-            json.dumps({"phase": "paused", "collection_mode": mode})
+            json.dumps(
+                {
+                    "phase": "paused",
+                    "collection_mode": mode,
+                    "profile_id": profile_id,
+                }
+            )
         )
         (directory / "scope.json").write_text(
-            json.dumps({"collection_mode": mode})
+            json.dumps({"collection_mode": mode, "profile_id": profile_id})
         )
 
     manager = SamplingTaskManager(tmp_path, project_root=tmp_path)
 
-    assert manager._discover_resumable_run("anonymous_repeat") == anonymous
-    assert manager._discover_resumable_run("logged_in_full_scroll") == logged_in
+    assert manager._discover_resumable_run("anonymous_repeat", "kuaishou") == anonymous
+    assert manager._discover_resumable_run(
+        "logged_in_full_scroll", "kuaishou"
+    ) == logged_in
+    assert manager._discover_resumable_run(
+        "logged_in_full_scroll", "profile-account2"
+    ) == second_profile
 
 
 @pytest.mark.asyncio
@@ -242,21 +263,30 @@ async def test_start_logged_in_mode_uses_new_run_and_full_scroll_command(
         limit=2463,
         open_browser_window=True,
     ).model_dump()
+    config["profile_id"] = "profile-account2"
+    config["profile_name"] = "账号二"
 
     status = await manager.start(config)
 
     assert status["active_run_dir"] != str(anonymous)
-    assert status["active_run_dir"].endswith("-logged-in")
+    assert status["active_run_dir"].endswith(
+        "-logged-in-profile-account2"
+    )
     command = captured["command"]
     assert command[command.index("--collection-mode") + 1] == (
         "logged_in_full_scroll"
     )
+    assert command[command.index("--profile-id") + 1] == "profile-account2"
     assert command[command.index("--loops") + 1] == "1"
     assert command[command.index("--max-consecutive") + 1] == "1"
     assert command[command.index("--max-scrolls-per-keyword") + 1] == "300"
     assert "--auto-reset-identity" not in command
+    scope = json.loads(
+        (Path(status["active_run_dir"]) / "scope.json").read_text()
+    )
+    assert scope["profile_id"] == "profile-account2"
     assert any(
-        "全部关键词_登录态全量滚动_累计去重结果.md" in part
+        "全部关键词_profile-account2_登录态全量滚动_去重结果.md" in part
         for part in command
     )
     await manager.pause()

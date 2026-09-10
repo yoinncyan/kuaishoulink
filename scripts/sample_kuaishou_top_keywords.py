@@ -227,6 +227,7 @@ def render_markdown(
     max_consecutive: int = 5,
     auto_reset_identity: bool = False,
     collection_mode: str = "anonymous_repeat",
+    profile_id: str = "kuaishou",
 ) -> None:
     keyword_order = {row["keyword"]: index for index, row in enumerate(keyword_rows)}
     raw_hits = sum(int(metric.get("raw_feed_rows") or 0) for metric in metrics)
@@ -265,6 +266,7 @@ def render_markdown(
         "",
         f"- 采集开始：{_japan_time(started_at)}",
         f"- 采集结束：{_japan_time(ended_at)}",
+        f"- 浏览器 Profile：{profile_id}",
         mode_line,
         schedule_line,
         reset_line,
@@ -627,6 +629,7 @@ def save_runtime_snapshot(
     max_consecutive: int = 5,
     auto_reset_identity: bool = False,
     collection_mode: str = "anonymous_repeat",
+    profile_id: str = "kuaishou",
 ) -> None:
     """Atomically record links and exact resume position before any reset."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -645,6 +648,7 @@ def save_runtime_snapshot(
     progress = {
         "schema_version": 1,
         "collection_mode": collection_mode,
+        "profile_id": profile_id,
         "phase": phase,
         "started_at": started_at,
         "updated_at": now,
@@ -681,6 +685,7 @@ def save_runtime_snapshot(
             "started_at": started_at,
             "updated_at": now,
             "collection_mode": collection_mode,
+            "profile_id": profile_id,
             "metrics": metrics,
             "videos": serialized_videos,
         },
@@ -1474,6 +1479,7 @@ def main() -> None:
         choices=("anonymous_repeat", "logged_in_full_scroll"),
         default="anonymous_repeat",
     )
+    parser.add_argument("--profile-id", default="kuaishou")
     parser.add_argument("--min-interval", type=float, default=6.0)
     parser.add_argument("--max-interval", type=float, default=12.0)
     parser.add_argument("--max-consecutive", type=int, default=5)
@@ -1544,12 +1550,18 @@ def main() -> None:
             raise ValueError(
                 f"运行目录模式为 {existing_mode}，不能用于 {args.collection_mode}"
             )
+        existing_profile_id = str(existing_scope.get("profile_id") or "kuaishou")
+        if existing_profile_id != args.profile_id:
+            raise ValueError(
+                f"运行目录 Profile 为 {existing_profile_id}，不能用于 {args.profile_id}"
+            )
     _atomic_json(
         scope_path,
         {
             **existing_scope,
             "schema_version": 2,
             "collection_mode": args.collection_mode,
+            "profile_id": args.profile_id,
             "keyword_file": str(args.keywords),
             "keyword_count": len(keyword_rows),
             "loops_per_keyword": requested_loops,
@@ -1568,6 +1580,11 @@ def main() -> None:
         if saved_mode != args.collection_mode:
             raise ValueError(
                 f"aggregate 模式为 {saved_mode}，不能用于 {args.collection_mode}"
+            )
+        saved_profile_id = str(saved.get("profile_id") or "kuaishou")
+        if saved_profile_id != args.profile_id:
+            raise ValueError(
+                f"aggregate Profile 为 {saved_profile_id}，不能用于 {args.profile_id}"
             )
         metrics = list(saved.get("metrics") or [])
         started_at = saved.get("started_at") or started_at
@@ -1624,6 +1641,7 @@ def main() -> None:
             max_consecutive=args.max_consecutive,
             auto_reset_identity=args.auto_reset_identity,
             collection_mode=args.collection_mode,
+            profile_id=args.profile_id,
         )
         merge_into_master(master, videos, master_keyword_order)
         master_sources[runtime_dir.name] = {
@@ -1632,6 +1650,7 @@ def main() -> None:
             "unique_video_count": len(aggregate),
             "status": "active",
             "collection_mode": args.collection_mode,
+            "profile_id": args.profile_id,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         save_master_record(args.master_json, master, master_sources)
@@ -1652,6 +1671,7 @@ def main() -> None:
             "unique_video_count": len(aggregate),
             "status": status,
             "collection_mode": args.collection_mode,
+            "profile_id": args.profile_id,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         save_master_record(args.master_json, master, master_sources)
@@ -1661,6 +1681,11 @@ def main() -> None:
 
     try:
         service_status = sampler._json("GET", "/api/probe/status")
+        active_profile_id = str(service_status.get("profile_id") or "kuaishou")
+        if active_profile_id != args.profile_id:
+            raise RuntimeError(
+                f"当前浏览器 Profile 为 {active_profile_id}，任务要求 {args.profile_id}"
+            )
         if not service_status.get("headless") and not args.allow_visible_browser:
             raise RuntimeError(
                 "自动采集要求后台无窗口模式；请以 "
@@ -1780,6 +1805,7 @@ def main() -> None:
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
                 collection_mode=args.collection_mode,
+                profile_id=args.profile_id,
             )
             mark_master_status("completed")
     except KeyboardInterrupt:
@@ -1809,6 +1835,7 @@ def main() -> None:
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
                 collection_mode=args.collection_mode,
+                profile_id=args.profile_id,
             )
             mark_master_status("paused")
         print("sampling paused; checkpoints saved", flush=True)
@@ -1839,6 +1866,7 @@ def main() -> None:
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=False,
                 collection_mode=args.collection_mode,
+                profile_id=args.profile_id,
             )
             mark_master_status("paused")
         print(f"sampling paused; manual reset required: {exc}", flush=True)
@@ -1899,6 +1927,7 @@ def main() -> None:
                 max_consecutive=1,
                 auto_reset_identity=False,
                 collection_mode=args.collection_mode,
+                profile_id=args.profile_id,
             )
             mark_master_status("paused")
         print(f"sampling paused; logged-in attention required: {exc}", flush=True)
@@ -1929,6 +1958,7 @@ def main() -> None:
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
                 collection_mode=args.collection_mode,
+                profile_id=args.profile_id,
             )
             mark_master_status("interrupted")
     finally:
@@ -1948,6 +1978,7 @@ def main() -> None:
             args.max_consecutive,
             args.auto_reset_identity,
             args.collection_mode,
+            args.profile_id,
         )
     print(
         json.dumps(
@@ -1955,6 +1986,7 @@ def main() -> None:
                 "output": str(args.output),
                 "keywords": len(keyword_rows),
                 "collection_mode": args.collection_mode,
+                "profile_id": args.profile_id,
                 "loops_per_keyword": requested_loops,
                 "raw_feed_rows": sum(row["raw_feed_rows"] for row in metrics),
                 "global_unique_videos": len(aggregate),

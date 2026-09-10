@@ -19,6 +19,7 @@ from backend.config import Settings
 
 from .network_probe import NetworkProbe, ProbeConfig, utc_now
 from .identity import load_or_create_identity
+from .profiles import ProfileRegistry
 
 logger = logging.getLogger("kuaishou.browser")
 
@@ -46,9 +47,15 @@ class BrowserProbeManager:
         self,
         settings: Settings,
         launch_context: Callable[..., Any] | None = None,
+        profile_registry: ProfileRegistry | None = None,
     ):
         self.settings = settings
         self._launch_context = launch_context
+        self.profiles = profile_registry or ProfileRegistry(
+            settings.data_dir,
+            legacy_profile_dir=settings.profile_dir,
+            legacy_identity_file=settings.identity_file,
+        )
         self._context: Any | None = None
         self._page: Any | None = None
         self._home_page: Any | None = None
@@ -63,6 +70,8 @@ class BrowserProbeManager:
         self._probe_started_at: str | None = None
         self._fingerprint_seed: int | None = None
         self._identity_id: str | None = None
+        self._active_profile_id: str | None = None
+        self._active_profile_name: str | None = None
         self._browser_temp_dir: str | None = None
         self._browser_version: str | None = None
         self._headless_override: bool | None = None
@@ -153,9 +162,15 @@ class BrowserProbeManager:
         self.settings.ensure_directories()
         try:
             launcher = await self._resolve_launcher()
-            identity = load_or_create_identity(self.settings.identity_file)
+            active_profile = self.profiles.active_profile()
+            profile_id = str(active_profile["profile_id"])
+            profile_dir = self.profiles.profile_dir(profile_id)
+            identity_file = self.profiles.identity_file(profile_id)
+            identity = load_or_create_identity(identity_file)
             self._fingerprint_seed = identity.fingerprint_seed
             self._identity_id = identity.identity_id
+            self._active_profile_id = profile_id
+            self._active_profile_name = str(active_profile["name"])
             browser_temp_dir = (
                 Path(tempfile.gettempdir())
                 / "kuaishou-cloakbrowser"
@@ -190,17 +205,18 @@ class BrowserProbeManager:
                 browser_version = get_chromium_version()
             self._browser_version = browser_version
             headless = self.effective_headless()
+            profile_proxy = active_profile.get("proxy") or self.settings.proxy
             launch_options: dict[str, Any] = {
-                "user_data_dir": self.settings.profile_dir,
+                "user_data_dir": profile_dir,
                 "headless": headless,
                 "locale": self.settings.browser_locale,
                 "timezone": self.settings.browser_timezone,
-                "geoip": self.settings.browser_geoip,
+                "geoip": self.settings.browser_geoip or bool(profile_proxy),
                 "humanize": False,
                 "license_key": self.settings.license_key,
                 "release_channel": self.settings.release_channel,
                 "browser_version": browser_version,
-                "proxy": self.settings.proxy,
+                "proxy": profile_proxy,
                 "env": browser_env,
                 "args": [
                     "--disable-dev-shm-usage",
@@ -215,7 +231,7 @@ class BrowserProbeManager:
             context = await launcher(**launch_options)
             self._context = context
             self._launched_headless = headless
-            generation_marker = self.settings.profile_dir / ".cloak-identity.json"
+            generation_marker = profile_dir / ".cloak-identity.json"
             generation_marker.write_text(
                 json.dumps(identity.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -446,6 +462,7 @@ class BrowserProbeManager:
             ProbeConfig(
                 root_dir=self.settings.captures_dir,
                 keyword=keyword,
+                profile_id=self.profiles.active_profile_id,
                 max_body_bytes=self.settings.max_body_bytes,
                 max_post_data_bytes=self.settings.max_post_data_bytes,
             )
@@ -805,6 +822,84 @@ class BrowserProbeManager:
                 self._browser_state = "stopped"
         return self.status()
 
+    def list_profiles(self) -> dict[str, Any]:
+        return self.profiles.list()
+
+    async def activate_profile(
+        self, profile_id: str, *, open_browser_window: bool = True
+    ) -> dict[str, Any]:
+        if self._probe_state in {"starting", "running", "stopping"}:
+            raise RuntimeError("请先暂停采集或停止探针再切换 Profile")
+        await self.configure_window_mode(open_browser_window)
+        await self.close_browser()
+        profile = self.profiles.activate(profile_id)
+        self._fingerprint_seed = None
+        self._identity_id = None
+        self._active_profile_id = None
+        self._active_profile_name = None
+        self._browser_temp_dir = None
+        await self.navigate(KUAISHOU_HOME_SEARCH_URL)
+        payload = self.status()
+        payload["profile_switched"] = profile
+        return payload
+
+    async def create_profile(
+        self,
+        name: str,
+        *,
+        proxy: str | None = None,
+        activate: bool = True,
+        open_browser_window: bool = True,
+    ) -> dict[str, Any]:
+        profile = self.profiles.create(name, proxy)
+        if activate:
+            browser = await self.activate_profile(
+                str(profile["profile_id"]),
+                open_browser_window=open_browser_window,
+            )
+        else:
+            browser = self.status()
+        return {
+            "created": profile,
+            "browser": browser,
+            **self.list_profiles(),
+        }
+
+    async def update_profile(
+        self,
+        profile_id: str,
+        *,
+        name: str | None = None,
+        proxy: str | None = None,
+        update_proxy: bool = False,
+    ) -> dict[str, Any]:
+        active = profile_id == self.profiles.active_profile_id
+        relaunch = active and update_proxy and self._context is not None
+        if relaunch:
+            await self.close_browser()
+        updated = self.profiles.update(
+            profile_id,
+            name=name,
+            proxy=proxy,
+            update_proxy=update_proxy,
+        )
+        if active:
+            self._active_profile_name = str(updated["name"])
+        if relaunch:
+            await self.navigate(KUAISHOU_HOME_SEARCH_URL)
+        return {"updated": updated, "browser": self.status(), **self.list_profiles()}
+
+    async def delete_profile(self, profile_id: str) -> dict[str, Any]:
+        deleted = self.profiles.delete(profile_id)
+        temp_dir = (
+            Path(tempfile.gettempdir())
+            / "kuaishou-cloakbrowser"
+            / str(deleted["identity_id"])
+        )
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        return {"deleted": deleted, **self.list_profiles()}
+
     async def reset_identity(self) -> dict[str, Any]:
         """Discard all persisted browser state and launch a fresh identity.
 
@@ -814,20 +909,24 @@ class BrowserProbeManager:
         site state.  Removing ``identity_file`` makes the next launch generate
         a new CloakBrowser fingerprint seed.
         """
-        old_seed = self._fingerprint_seed
-        old_identity_id = self._identity_id
+        active_profile = self.profiles.active_profile()
+        active_profile_id = str(active_profile["profile_id"])
+        existing_identity = self.profiles.identity(active_profile_id)
+        old_seed = self._fingerprint_seed or existing_identity.fingerprint_seed
+        old_identity_id = self._identity_id or existing_identity.identity_id
         old_temp_dir = self._browser_temp_dir
         await self.close_browser()
 
         data_dir = self.settings.data_dir.resolve()
-        profile_dir = self.settings.profile_dir.resolve()
+        profile_dir = self.profiles.profile_dir(active_profile_id).resolve()
         if profile_dir == data_dir or data_dir not in profile_dir.parents:
             raise RuntimeError("profile directory must be inside the runtime data directory")
 
-        identity_file = self.settings.identity_file
+        identity_file = self.profiles.identity_file(active_profile_id)
         browser_temp_root = (
             Path(tempfile.gettempdir()) / "kuaishou-cloakbrowser"
         ).resolve()
+        active_browser_temp = browser_temp_root / old_identity_id
 
         def tree_stats(path: Any) -> dict[str, int]:
             files = 0
@@ -846,7 +945,7 @@ class BrowserProbeManager:
             return {"files": files, "directories": directories, "bytes": total_bytes}
 
         removed_profile_stats = tree_stats(profile_dir)
-        removed_temp_stats = tree_stats(browser_temp_root)
+        removed_temp_stats = tree_stats(active_browser_temp)
         reset_token = secrets.token_hex(12)
         quarantine_parent = data_dir / ".identity-reset-trash"
         quarantine = quarantine_parent / reset_token
@@ -858,15 +957,15 @@ class BrowserProbeManager:
         identity_temp = identity_file.with_suffix(identity_file.suffix + ".tmp")
         if identity_temp.exists():
             identity_temp.rename(quarantine / "identity.json.tmp")
-        if browser_temp_root.exists():
-            shutil.rmtree(browser_temp_root)
+        if active_browser_temp.exists():
+            shutil.rmtree(active_browser_temp)
         shutil.rmtree(quarantine)
         try:
             quarantine_parent.rmdir()
         except OSError:
             pass
 
-        if profile_dir.exists() or identity_file.exists() or browser_temp_root.exists():
+        if profile_dir.exists() or identity_file.exists() or active_browser_temp.exists():
             raise RuntimeError("deep identity purge verification failed")
 
         self._probe = None
@@ -888,6 +987,8 @@ class BrowserProbeManager:
             chromium_version = None
         reset_report = {
             "mode": "deep",
+            "profile_id": active_profile_id,
+            "profile_name": active_profile["name"],
             "reset_token": reset_token,
             "old_identity_id": old_identity_id,
             "new_identity_id": self._identity_id,
@@ -1072,6 +1173,8 @@ class BrowserProbeManager:
             and (self._probe is None or not self._probe.active)
         ):
             reported_probe_state = "stopped"
+        active_profile = self.profiles.active_profile()
+        active_profile_id = str(active_profile["profile_id"])
         payload: dict[str, Any] = {
             # `state` remains the probe-state alias used by the initial UI/API.
             "state": reported_probe_state,
@@ -1090,12 +1193,17 @@ class BrowserProbeManager:
             ),
             "browser_locale": self.settings.browser_locale,
             "browser_timezone": self.settings.browser_timezone,
-            "browser_geoip": self.settings.browser_geoip,
+            "browser_geoip": self.settings.browser_geoip
+            or bool(active_profile.get("proxy")),
             "fingerprint_seed": self._fingerprint_seed,
             "identity_id": self._identity_id,
             "browser_temp_dir": self._browser_temp_dir,
             "browser_version": self._browser_version,
-            "profile_dir": str(self.settings.profile_dir),
+            "profile_id": active_profile_id,
+            "profile_name": active_profile["name"],
+            "profile_count": self.profiles.list()["profile_count"],
+            "profile_proxy_configured": bool(active_profile.get("proxy")),
+            "profile_dir": str(self.profiles.profile_dir(active_profile_id)),
         }
         payload["probe"] = self._probe.status() if self._probe is not None else None
         return payload

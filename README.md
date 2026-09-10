@@ -8,7 +8,7 @@
 
 已经具备：
 
-- 单一持久化 CloakBrowser Profile；登录 Cookie 跨重启保留。
+- 多账号 CloakBrowser Profile；每份 Profile 的登录 Cookie、站点存储、缓存和指纹身份独立持久化。
 - 从快手首页搜索框输入关键词并点击“搜索”，不直接打开搜索 URL。
 - CDP `Network.*` 请求、响应及 Response Body 捕获。
 - Fetch/XHR、GraphQL operationName 和 WebSocket 帧记录。
@@ -98,6 +98,8 @@ outputs/kuaishou-anonymous-sample-20260908/快手视频链接_累计去重总表
 
 Web 首页提供独立的批量任务控制区，无需再通过终端或对话操作：
 
+- **Profile 选择与切换**：创建、重命名、配置独立代理、切换或删除账号 Profile；切换时关闭当前浏览器进程，并用所选 Profile 的独立 user-data、identity 和临时缓存重新启动。
+- **任务按 Profile 隔离**：同一种采集模式在不同 Profile 下使用不同运行目录、关键词进度和检查点；所有 Profile 的视频仍进入同一累计主记录并全局去重。
 - **开始采集 / 继续采集**：自动选择最近的未完成检查点。
 - **登录后全量滚动**：默认开启；使用独立关键词进度，每词固定搜索 1 次并滚动到“没有更多了”，但链接仍写入同一累计去重总表。
 - **暂停并保存**：向采样进程发送优雅暂停信号，保存关键词次数、去重链接和累计总表。
@@ -107,7 +109,22 @@ Web 首页提供独立的批量任务控制区，无需再通过终端或对话�
 - 页面实时显示独立模式总进度、当前关键词、当前词进度、当前词分页响应、当前词去重链接、本模式去重数和累计去重数。
 - 第一阶段完成后，“第二阶段 · 评论数量”面板可逐条查询 `commentListQuery`，实时显示完成比例、评论数大于/不大于 50 的数量、未解决错误及检查点位置，并支持独立开始/继续和暂停保存。
 
-对应接口为 `GET /api/task/status`、`POST /api/task/start`、`POST /api/task/pause` 和 `POST /api/task/reset-identity`。`GET /api/browser/search-page-state` 只读取“没有更多了”等滚动控制状态；视频标题、作者和链接仍全部来自网络响应。
+Profile 接口为 `GET/POST /api/profiles`、`PATCH/DELETE /api/profiles/{profile_id}` 和 `POST /api/profiles/{profile_id}/activate`。任务接口为 `GET /api/task/status`、`POST /api/task/start`、`POST /api/task/pause` 和 `POST /api/task/reset-identity`。`GET /api/browser/search-page-state` 只读取“没有更多了”等滚动控制状态；视频标题、作者和链接仍全部来自网络响应。
+
+Profile 数据结构：
+
+```text
+runtime/profiles/
+├── registry.json
+├── kuaishou/                 # 无损接管原有已登录 Profile
+│   ├── .identity.json
+│   └── Default/...
+└── profile-<随机ID>/         # 新账号的完全独立 user-data
+    ├── .identity.json
+    └── Default/...
+```
+
+共享的 `~/.cloakbrowser` 只缓存浏览器可执行文件，不包含账号会话。每个 Profile 的指纹种子、Cookie、LocalStorage、IndexedDB、HTTP/代码/GPU 缓存和进程临时目录均相互隔离；切换 Profile 会重启浏览器进程，因此内存中的 DNS、Socket 和 TLS 会话也不会跨 Profile 复用。
 
 第二阶段检查点和最终 Markdown：
 

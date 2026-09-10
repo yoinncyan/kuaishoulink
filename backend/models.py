@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -94,6 +94,68 @@ class SamplingStartRequest(BaseModel):
 
 
 class BrowserWindowModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    open_browser_window: bool = True
+
+
+def _normalize_proxy(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    parts = urlsplit(normalized)
+    if parts.scheme not in {"http", "https", "socks5", "socks5h"} or not parts.hostname:
+        raise ValueError("代理地址必须是 http、https、socks5 或 socks5h URL")
+    return normalized
+
+
+class ProfileCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=60)
+    proxy: Optional[str] = Field(default=None, max_length=2048)
+    activate: bool = True
+    open_browser_window: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            raise ValueError("Profile 名称不能为空")
+        return normalized
+
+    @field_validator("proxy")
+    @classmethod
+    def normalize_proxy(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_proxy(value)
+
+
+class ProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    proxy: Optional[str] = Field(default=None, max_length=2048)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_optional_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            raise ValueError("Profile 名称不能为空")
+        return normalized
+
+    @field_validator("proxy")
+    @classmethod
+    def normalize_optional_proxy(cls, value: Optional[str]) -> Optional[str]:
+        return _normalize_proxy(value)
+
+
+class ProfileActivateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     open_browser_window: bool = True
