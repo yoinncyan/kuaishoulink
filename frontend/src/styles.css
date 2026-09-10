@@ -85,6 +85,9 @@ code { color: #d4d8df; background: #12161b; border: 1px solid #252a32; padding: 
 .task-metric strong { display: block; margin-top: 6px; overflow: hidden; color: #eef1f5; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .task-footnote { display: flex; justify-content: space-between; gap: 16px; margin-top: 12px; color: #68717e; font: 11px ui-monospace, monospace; }
 .task-error { margin-top: 12px; padding: 9px 11px; border: 1px solid #572b32; border-radius: 8px; color: #ff9fa9; background: rgba(80, 24, 33, .17); font-size: 12px; }
+.task-error > strong { display: block; margin-bottom: 8px; color: #ffb0b8; }
+.task-error-details { display: flex; flex-wrap: wrap; gap: 6px 14px; color: #ffbdc4; font: 11px ui-monospace, monospace; }
+.task-error-explanation { margin-top: 8px; color: #c9949a; line-height: 1.55; }
 .start-form { margin-top: 24px; }
 .start-form label { display: block; margin-bottom: 8px; color: #bbc1ca; font-size: 13px; font-weight: 650; }
 .input-row { display: grid; grid-template-columns: minmax(260px, 1fr) auto auto; gap: 10px; }

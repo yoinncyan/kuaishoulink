@@ -65,6 +65,7 @@ class KuaishouResponseParser:
         self.failed_search_responses = 0
         self.search_feed_rows = 0
         self.comment_responses = 0
+        self.last_failed_search: dict[str, Any] | None = None
 
     def consume(
         self,
@@ -78,14 +79,23 @@ class KuaishouResponseParser:
             return []
         path = urlsplit(url).path
         if path == "/rest/v/search/feed":
-            return self._consume_search_feed(response_data)
+            return self._consume_search_feed(request_data, response_data)
         if "commentListQuery" in operation_names:
             return self._consume_comment_count(request_data, response_data)
         return []
 
-    def _consume_search_feed(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _consume_search_feed(
+        self, request_data: Any, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         if payload.get("result") != 1 or not isinstance(payload.get("feeds"), list):
             self.failed_search_responses += 1
+            request = request_data if isinstance(request_data, dict) else {}
+            self.last_failed_search = {
+                "result": payload.get("result"),
+                "error_msg": payload.get("error_msg") or payload.get("message"),
+                "requested_cursor": request.get("pcursor"),
+                "keyword": request.get("keyword") or self.keyword,
+            }
             return []
         self.successful_search_responses += 1
         self.search_feed_rows += len(payload["feeds"])
@@ -198,6 +208,7 @@ class KuaishouResponseParser:
             "search_cursor": self.search_cursor,
             "successful_search_responses": self.successful_search_responses,
             "failed_search_responses": self.failed_search_responses,
+            "last_failed_search": self.last_failed_search,
             "search_feed_rows": self.search_feed_rows,
             "comment_responses": self.comment_responses,
             "video_count": len(records),

@@ -749,9 +749,24 @@ export default function App() {
         )}
         {taskStatus.progress?.event === "logged_in_attention_required" && (
           <div className="task-error">
-            登录态采集已暂停：
-            {String(taskStatus.progress.details?.error ?? "页面或分页接口异常")}
-            。账号、Cookie、指纹和已采集链接均已保留，请检查 CloakBrowser 页面后继续；不要执行深度重置。
+            <strong>登录态网络分页已暂停</strong>
+            <div className="task-error-details">
+              <span>关键词：{taskStatus.progress.current_keyword ?? "未知"}</span>
+              <span>
+                阶段：{taskStatus.progress.details?.failure_stage === "pagination"
+                  ? "滚动请求下一页"
+                  : "首次搜索"}
+              </span>
+              <span>接口页数：{String(taskStatus.progress.details?.page_responses ?? 0)}</span>
+              <span>已保存链接：{String(taskStatus.progress.details?.saved_unique_videos ?? 0)}</span>
+              <span>请求游标：{String(taskStatus.progress.details?.requested_cursor ?? "—")}</span>
+              <span>HTTP：{String(taskStatus.progress.details?.http_status ?? "—")}</span>
+              <span>响应 result：{String(taskStatus.progress.details?.response_result ?? "—")}</span>
+              <span>风控头：{String(taskStatus.progress.details?.error ?? "—")}</span>
+            </div>
+            <div className="task-error-explanation">
+              这类异常通常不会在页面显示报错；页面可能仍显示首屏内容，甚至显示“没有更多了”。当前网络响应没有返回下一页视频，因此没有把现有结果误判为完整结果。账号、Cookie、指纹和已采集链接均已保留，稍后点击继续会重新完整采集当前关键词；不要执行深度重置。
+            </div>
           </div>
         )}
         {taskStatus.last_error && <div className="task-error">{taskStatus.last_error}</div>}

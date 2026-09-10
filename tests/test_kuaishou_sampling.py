@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from scripts.sample_kuaishou_top_keywords import (
+    LoggedInAttentionRequired,
     ManualResetRequired,
     Sampler,
     _needs_identity_reset,
@@ -525,3 +526,95 @@ def test_logged_in_full_scroll_searches_once_and_stops_at_no_more(
     assert saved["collection_mode"] == "logged_in_full_scroll"
     assert saved["full_scroll_complete"] is True
     assert saved["scroll_count"] == 1
+
+
+def test_logged_in_pagination_risk_keeps_network_diagnostics(
+    tmp_path, monkeypatch
+):
+    events = []
+    video = {
+        "video_id": "VIDEO1",
+        "video_url": "https://www.kuaishou.com/short-video/VIDEO1",
+        "title": "一",
+        "author_name": "作者一",
+    }
+
+    class RiskSampler(Sampler):
+        def __init__(self):
+            self.scrolled = False
+
+        def _json(self, method, path, payload=None):
+            if method == "POST" and path == "/api/probe/start":
+                return {
+                    "page_url": "https://www.kuaishou.com/search/vpn",
+                    "search_navigation": {"verified": True},
+                }
+            if method == "GET" and path == "/api/browser/search-page-state":
+                return {"search_page": {"no_more_visible": self.scrolled}}
+            if method == "POST" and path == "/api/browser/scroll":
+                self.scrolled = True
+                return {}
+            if method == "GET" and path == "/api/probe/status":
+                return {
+                    "probe_state": "running",
+                    "probe": {
+                        "session_id": "CAPTURE1",
+                        "risk_controls": [
+                            {
+                                "intercept_result": "risk-control;2",
+                                "status": 200,
+                                "url": "https://www.kuaishou.com/rest/v/search/feed",
+                            }
+                        ]
+                        if self.scrolled
+                        else [],
+                        "extracted": {
+                            "successful_search_responses": 1,
+                            "failed_search_responses": 1 if self.scrolled else 0,
+                            "search_feed_rows": 20,
+                            "search_cursor": "1",
+                            "videos": [video],
+                            "last_failed_search": {
+                                "result": 2,
+                                "error_msg": None,
+                                "requested_cursor": "1",
+                                "keyword": "vpn",
+                            }
+                            if self.scrolled
+                            else None,
+                        },
+                    },
+                }
+            if method == "POST" and path == "/api/probe/stop":
+                return {}
+            raise AssertionError((method, path, payload))
+
+        def wait_first_response(self, timeout_seconds=25.0):
+            return self._json("GET", "/api/probe/status")
+
+    monkeypatch.setattr("scripts.sample_kuaishou_top_keywords.time.sleep", lambda _: None)
+    sampler = RiskSampler()
+    checkpoint = tmp_path / "vpn.json"
+
+    with pytest.raises(LoggedInAttentionRequired, match="risk-control;2"):
+        sampler.sample_keyword_full_scroll(
+            "vpn",
+            checkpoint,
+            0,
+            0,
+            10,
+            lambda metric, videos, event, details: events.append(
+                (metric, videos, event, details)
+            ),
+        )
+
+    metric, videos, event, details = events[-1]
+    assert event == "logged_in_attention_required"
+    assert metric["risk_control_count"] == 1
+    assert len(videos) == 1
+    assert details["failure_stage"] == "pagination"
+    assert details["requested_cursor"] == "1"
+    assert details["response_result"] == 2
+    assert details["page_responses"] == 1
+    assert details["saved_unique_videos"] == 1
+    assert details["end_marker_visible"] is True

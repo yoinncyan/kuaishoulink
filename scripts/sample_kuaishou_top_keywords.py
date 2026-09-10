@@ -1174,6 +1174,7 @@ class Sampler:
                 runs[-1].update(
                     {
                         "successful": False,
+                        "risk_control": bool(details.get("risk_control")),
                         "error": error,
                         "completed_at": datetime.now(timezone.utc).isoformat(
                             timespec="seconds"
@@ -1186,6 +1187,7 @@ class Sampler:
                         "attempt": search_attempts,
                         "successful": False,
                         "counted_as_round": False,
+                        "risk_control": bool(details.get("risk_control")),
                         "error": error,
                         "recorded_at": datetime.now(timezone.utc).isoformat(
                             timespec="seconds"
@@ -1227,16 +1229,26 @@ class Sampler:
             )
             failed_responses = int(extracted.get("failed_search_responses") or 0)
             if risks or failed_responses or successful_responses < 1:
+                failed_search = extracted.get("last_failed_search") or {}
+                risk_event = risks[-1] if risks else {}
                 error = (
-                    str(risks[-1].get("intercept_result"))
+                    str(risk_event.get("intercept_result"))
                     if risks
                     else "logged-in search feed did not return a successful response"
                 )
                 mark_attempt_failed(
                     error,
                     {
+                        "failure_stage": "initial_search",
                         "failed_responses": failed_responses,
                         "risk_control": bool(risks),
+                        "http_status": risk_event.get("status"),
+                        "endpoint": risk_event.get("url"),
+                        "response_result": failed_search.get("result"),
+                        "requested_cursor": failed_search.get("requested_cursor"),
+                        "page_responses": successful_responses,
+                        "saved_unique_videos": len(keyword_videos),
+                        "capture_session_id": probe.get("session_id"),
                     },
                 )
                 raise LoggedInAttentionRequired(error)
@@ -1334,16 +1346,31 @@ class Sampler:
                     int(extracted.get("successful_search_responses") or 0),
                 )
                 if risks or failed_responses:
+                    failed_search = extracted.get("last_failed_search") or {}
+                    risk_event = risks[-1] if risks else {}
                     error = (
-                        str(risks[-1].get("intercept_result"))
+                        str(risk_event.get("intercept_result"))
                         if risks
                         else "search pagination returned a failed response"
                     )
                     mark_attempt_failed(
                         error,
                         {
+                            "failure_stage": "pagination",
                             "failed_responses": failed_responses,
                             "risk_control": bool(risks),
+                            "http_status": risk_event.get("status"),
+                            "endpoint": risk_event.get("url"),
+                            "response_result": failed_search.get("result"),
+                            "response_error": failed_search.get("error_msg"),
+                            "requested_cursor": failed_search.get(
+                                "requested_cursor"
+                            )
+                            or search_cursor,
+                            "page_responses": page_responses,
+                            "saved_unique_videos": len(keyword_videos),
+                            "end_marker_visible": end_marker_visible,
+                            "capture_session_id": probe.get("session_id"),
                             "scroll_count": scroll_count,
                         },
                     )
@@ -1837,6 +1864,12 @@ def main() -> None:
                 }
             ]
         if metrics:
+            saved_progress = {}
+            try:
+                saved_progress = json.loads(progress_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            saved_details = dict(saved_progress.get("details") or {})
             last_metric = next(
                 (
                     row
@@ -1856,7 +1889,11 @@ def main() -> None:
                 aggregate=aggregate,
                 requested_loops=requested_loops,
                 event="logged_in_attention_required",
-                details={"error": str(exc), "preserved_login": True},
+                details={
+                    **saved_details,
+                    "error": str(exc),
+                    "preserved_login": True,
+                },
                 min_interval=args.min_interval,
                 max_interval=args.max_interval,
                 max_consecutive=1,

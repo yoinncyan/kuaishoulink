@@ -75,3 +75,24 @@ def test_comment_pagination_is_ignored_and_content_is_omitted():
     assert comment_feed["commentCountV2"] == 1220
     assert comment_feed["rootCommentsV2"] == {"omitted": True, "row_count": 1}
     assert "COMMENT_CONTENT" not in json.dumps(sanitized)
+
+
+def test_failed_search_response_preserves_result_and_requested_cursor():
+    parser = KuaishouResponseParser("vpn客户端")
+
+    events = parser.consume(
+        url="https://www.kuaishou.com/rest/v/search/feed?caver=2",
+        operation_names=[],
+        request_data={"keyword": "vpn客户端", "pcursor": "1"},
+        response_data={"result": 2},
+    )
+
+    assert events == []
+    status = parser.status()
+    assert status["failed_search_responses"] == 1
+    assert status["last_failed_search"] == {
+        "result": 2,
+        "error_msg": None,
+        "requested_cursor": "1",
+        "keyword": "vpn客户端",
+    }
