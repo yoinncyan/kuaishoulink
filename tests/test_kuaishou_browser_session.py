@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 from unittest.mock import patch
@@ -7,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from backend.config import Settings
-from backend.kuaishou.browser_session import BrowserProbeManager
+from backend.kuaishou.browser_session import BrowserProbeManager, ProbeStartCancelled
 
 
 class FakeCdpSession:
@@ -323,6 +324,38 @@ async def test_closed_visible_page_is_reported_stopped_and_relaunched(tmp_path):
     assert contexts[0].closed is True
     assert recovered["browser_state"] == "running"
     assert recovered["identity_id"] == identity_id
+    await manager.close_browser()
+
+
+@pytest.mark.asyncio
+async def test_pause_during_probe_start_cannot_restore_stale_running_state(tmp_path):
+    context = FakeContext()
+    navigation_started = asyncio.Event()
+    release_navigation = asyncio.Event()
+
+    async def launcher(**kwargs):
+        return context
+
+    manager = BrowserProbeManager(settings(tmp_path), launch_context=launcher)
+    original_trigger = manager._trigger_search_from_home
+
+    async def delayed_trigger(keyword, probe):
+        navigation_started.set()
+        await release_navigation.wait()
+        return await original_trigger(keyword, probe)
+
+    manager._trigger_search_from_home = delayed_trigger
+    start_task = asyncio.create_task(manager.start("vpn"))
+    await navigation_started.wait()
+
+    await manager.stop()
+    release_navigation.set()
+
+    with pytest.raises(ProbeStartCancelled):
+        await start_task
+    status = manager.status()
+    assert status["probe_state"] == "stopped"
+    assert status["probe"]["active"] is False
     await manager.close_browser()
 
 

@@ -29,6 +29,10 @@ KUAISHOU_SEARCH_PLACEHOLDER = "请输入你要搜索的内容"
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,80}$")
 
 
+class ProbeStartCancelled(RuntimeError):
+    """A concurrent pause superseded an in-flight probe start."""
+
+
 class BrowserProbeManager:
     """Own exactly one persistent browser context and one optional probe.
 
@@ -52,6 +56,7 @@ class BrowserProbeManager:
         self._lock = asyncio.Lock()
         self._browser_state = "stopped"
         self._probe_state = "stopped"
+        self._probe_generation = 0
         self._last_error: str | None = None
         self._page_url: str | None = None
         self._browser_started_at: str | None = None
@@ -81,6 +86,16 @@ class BrowserProbeManager:
 
     async def configure_window_mode(self, open_browser_window: bool) -> dict[str, Any]:
         """Choose whether the next browser launch has a visible app window."""
+        async with self._lock:
+            if (
+                self._probe_state in {"starting", "running", "stopping"}
+                and (self._probe is None or not self._probe.active)
+            ):
+                # A user can close the visible browser while /probe/start is
+                # still returning. Normalize the stale state so the next task
+                # start can relaunch the same persisted Profile immediately.
+                self._probe_generation += 1
+                self._probe_state = "stopped"
         desired_headless = not open_browser_window
         if self._probe_state == "error":
             await self.stop()
@@ -421,6 +436,9 @@ class BrowserProbeManager:
             if self._probe_state in {"starting", "running", "stopping"}:
                 raise RuntimeError("a probe session is already active")
             self._probe_state = "starting"
+            self._probe_generation += 1
+            generation = self._probe_generation
+            self._probe = None
             self._last_error = None
             self._probe_started_at = utc_now()
 
@@ -433,7 +451,18 @@ class BrowserProbeManager:
             )
         )
         await probe.start()
-        self._probe = probe
+        async with self._lock:
+            if (
+                generation != self._probe_generation
+                or self._probe_state != "starting"
+            ):
+                cancelled_before_attach = True
+            else:
+                self._probe = probe
+                cancelled_before_attach = False
+        if cancelled_before_attach:
+            await probe.stop(error="probe start superseded by pause")
+            raise ProbeStartCancelled("probe start was cancelled by pause")
 
         try:
             await self.launch_browser()
@@ -456,6 +485,14 @@ class BrowserProbeManager:
             # search navigation from the preceding home/bootstrap transition.
             await page.wait_for_timeout(1_200)
             async with self._lock:
+                if (
+                    generation != self._probe_generation
+                    or self._probe is not probe
+                    or not probe.active
+                ):
+                    raise ProbeStartCancelled(
+                        "probe start was cancelled before navigation completed"
+                    )
                 self._probe_state = "running"
             payload = self.status()
             payload["search_navigation"] = {
@@ -464,7 +501,20 @@ class BrowserProbeManager:
                 "mode": "home_search_form",
             }
             return payload
+        except ProbeStartCancelled:
+            await probe.stop(error="probe start superseded by pause")
+            async with self._lock:
+                if generation == self._probe_generation:
+                    self._probe_state = "stopped"
+            raise
         except Exception as exc:
+            async with self._lock:
+                superseded = generation != self._probe_generation
+            if superseded:
+                await probe.stop(error="probe start superseded by pause")
+                raise ProbeStartCancelled(
+                    "probe start was cancelled while navigation was in progress"
+                ) from exc
             message = f"{type(exc).__name__}: {exc}"
             logger.exception("Could not start Kuaishou probe")
             self._last_error = message
@@ -718,11 +768,16 @@ class BrowserProbeManager:
         """Stop only the capture; retain the persistent browser and login."""
         async with self._lock:
             if self._probe_state not in {"running", "error", "starting"}:
+                if self._probe is None or not self._probe.active:
+                    self._probe_state = "stopped"
+                    return self._probe.status() if self._probe is not None else {}
                 raise RuntimeError("no active probe session")
+            self._probe_generation += 1
             self._probe_state = "stopping"
+            probe = self._probe
         summary: dict[str, Any] = {}
-        if self._probe is not None:
-            summary = await self._probe.stop(error=self._last_error)
+        if probe is not None:
+            summary = await probe.stop(error=self._last_error)
         async with self._lock:
             self._probe_state = "stopped"
         return summary
@@ -1011,10 +1066,16 @@ class BrowserProbeManager:
         if self._browser_state == "running" and page_closed:
             reported_browser_state = "stopped"
             reported_page_url = None
+        reported_probe_state = self._probe_state
+        if (
+            reported_probe_state in {"starting", "running", "stopping"}
+            and (self._probe is None or not self._probe.active)
+        ):
+            reported_probe_state = "stopped"
         payload: dict[str, Any] = {
             # `state` remains the probe-state alias used by the initial UI/API.
-            "state": self._probe_state,
-            "probe_state": self._probe_state,
+            "state": reported_probe_state,
+            "probe_state": reported_probe_state,
             "browser_state": reported_browser_state,
             "started_at": self._probe_started_at,
             "browser_started_at": self._browser_started_at,
