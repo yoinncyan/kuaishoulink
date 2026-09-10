@@ -60,6 +60,18 @@ class FakePage:
     async def evaluate(self, script, arg=None):
         if self.closed:
             raise RuntimeError("page has been closed")
+        if "noMoreVisible" in script:
+            return {
+                "noMorePresent": True,
+                "noMoreVisible": True,
+                "markerText": "没有更多了",
+                "scrollY": 3200,
+                "viewportHeight": 800,
+                "documentHeight": 4000,
+            }
+        if "window.open = (url)" in script:
+            self.context.force_same_tab = True
+            return True
         if "window.innerWidth" in script:
             return {"width": 1000, "height": 800}
         if "checkLoginQuery" in script:
@@ -114,6 +126,11 @@ class FakeLocator:
         self._open_result_page()
 
     def _open_result_page(self):
+        if self.page.context.force_same_tab:
+            self.page.url = "https://www.kuaishou.com/search/" + quote(
+                self.page.search_value, safe=""
+            )
+            return
         result = FakePage(self.page.context)
         result.url = "https://www.kuaishou.com/search/" + quote(
             self.page.search_value, safe=""
@@ -138,6 +155,7 @@ class FakeContext:
         self.pages = []
         self.closed = False
         self.block_button_click = False
+        self.force_same_tab = False
         self.pages.append(FakePage(self))
 
     def on(self, event, callback):
@@ -215,7 +233,7 @@ async def test_manager_launches_persistent_profile_and_navigates(tmp_path):
     assert status["search_navigation"]["verified"] is True
     assert launch_options["user_data_dir"] == tmp_path / "profiles" / "kuaishou"
     assert launch_options["headless"] is True
-    home_page = next(page for page in context.pages if "isHome=1" in page.url)
+    home_page = context.pages[0]
     assert [visit[0] for visit in home_page.visited] == [
         "https://www.kuaishou.com/?isHome=1&source=SEARCH"
     ]
@@ -336,6 +354,9 @@ async def test_login_browser_lifetime_is_independent_from_probe(tmp_path):
     assert scroll["scroll"]["target"] == "right-content-pane"
     assert context.pages[0].mouse.moves == [(720.0, 576.0)]
     assert context.pages[0].mouse.wheels == [(0, 2000 / 3)] * 3
+    page_state = await manager.search_page_state()
+    assert page_state["search_page"]["no_more_visible"] is True
+    assert page_state["search_page"]["marker_text"] == "没有更多了"
     await manager.reload_page()
     await manager.close_browser()
     assert context.closed is True

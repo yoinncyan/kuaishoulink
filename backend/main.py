@@ -157,6 +157,19 @@ async def scroll_browser(request: BrowserScrollRequest) -> dict:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/browser/search-page-state")
+async def search_page_state() -> dict:
+    try:
+        return await probe_manager.search_page_state()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Search page state inspection failed")
+        raise HTTPException(
+            status_code=500, detail=f"搜索页状态检测失败：{exc}"
+        ) from exc
+
+
 @app.post("/api/browser/close")
 async def close_browser() -> dict:
     return await probe_manager.close_browser()

@@ -107,25 +107,46 @@ class SamplingTaskManager:
             if self._active_run_dir is not None:
                 self._state = "paused"
 
-    def _discover_resumable_run(self) -> Path | None:
+    def _run_collection_mode(self, run_dir: Path) -> str:
+        scope = self._read_json(run_dir / "scope.json") or {}
+        if scope.get("collection_mode"):
+            return str(scope["collection_mode"])
+        progress = self._read_json(run_dir / "progress.json") or {}
+        return str(progress.get("collection_mode") or "anonymous_repeat")
+
+    def _discover_resumable_run(
+        self, collection_mode: str | None = None
+    ) -> Path | None:
         if not self.sampling_root.exists():
             return None
         candidates: list[tuple[float, Path]] = []
         for progress_path in self.sampling_root.glob("*/progress.json"):
             try:
                 payload = json.loads(progress_path.read_text(encoding="utf-8"))
-                if payload.get("phase") != "completed":
+                if (
+                    payload.get("phase") != "completed"
+                    and (
+                        collection_mode is None
+                        or self._run_collection_mode(progress_path.parent)
+                        == collection_mode
+                    )
+                ):
                     candidates.append((progress_path.stat().st_mtime, progress_path.parent))
             except (OSError, json.JSONDecodeError):
                 continue
         return max(candidates)[1] if candidates else None
 
-    def _new_run_dir(self) -> Path:
+    def _new_run_dir(self, collection_mode: str = "anonymous_repeat") -> Path:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        candidate = self.sampling_root / stamp
+        suffix_label = (
+            "-logged-in"
+            if collection_mode == "logged_in_full_scroll"
+            else ""
+        )
+        candidate = self.sampling_root / f"{stamp}{suffix_label}"
         suffix = 1
         while candidate.exists():
-            candidate = self.sampling_root / f"{stamp}-{suffix}"
+            candidate = self.sampling_root / f"{stamp}{suffix_label}-{suffix}"
             suffix += 1
         return candidate
 
@@ -155,10 +176,50 @@ class SamplingTaskManager:
         async with self._lock:
             if self.running:
                 raise RuntimeError("采集任务已经在运行")
+            stage = str(config.get("stage") or "search")
+            collection_mode = str(
+                config.get("collection_mode") or "anonymous_repeat"
+            )
             run_dir = self._active_run_dir or self._discover_resumable_run()
+            if (
+                stage == "search"
+                and run_dir is not None
+                and self._run_collection_mode(run_dir) != collection_mode
+            ):
+                run_dir = self._discover_resumable_run(collection_mode)
             if run_dir is None:
-                run_dir = self._new_run_dir()
+                run_dir = self._new_run_dir(collection_mode)
             run_dir.mkdir(parents=True, exist_ok=True)
+            if stage == "search":
+                scope_path = run_dir / "scope.json"
+                scope = self._read_json(scope_path) or {}
+                scope.update(
+                    {
+                        "schema_version": 2,
+                        "collection_mode": collection_mode,
+                        "keyword_file": str(self.keyword_file),
+                        "keyword_count": int(config["limit"]),
+                        "loops_per_keyword": 1
+                        if collection_mode == "logged_in_full_scroll"
+                        else int(config["loops"]),
+                        "target_rounds": int(config["limit"])
+                        * (
+                            1
+                            if collection_mode == "logged_in_full_scroll"
+                            else int(config["loops"])
+                        ),
+                        "max_scrolls_per_keyword": int(
+                            config.get("max_scrolls_per_keyword") or 300
+                        ),
+                        "updated_at": utc_now(),
+                    }
+                )
+                temporary = scope_path.with_suffix(".json.tmp")
+                temporary.write_text(
+                    json.dumps(scope, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(scope_path)
             self._active_run_dir = run_dir
             self._config = dict(config)
             self._state = "starting"
@@ -208,31 +269,52 @@ class SamplingTaskManager:
                     / "scripts"
                     / "sample_kuaishou_top_keywords.py"
                 )
+                logged_in_scroll = collection_mode == "logged_in_full_scroll"
+                loops = 1 if logged_in_scroll else int(config["loops"])
+                min_interval = (
+                    config["scroll_min_interval"]
+                    if logged_in_scroll
+                    else config["min_interval"]
+                )
+                max_interval = (
+                    config["scroll_max_interval"]
+                    if logged_in_scroll
+                    else config["max_interval"]
+                )
+                output_name = (
+                    "全部关键词_登录态全量滚动_累计去重结果.md"
+                    if logged_in_scroll
+                    else "全部关键词_每词20次_累计去重结果.md"
+                )
                 command = [
                     sys.executable,
                     str(script),
+                    "--collection-mode",
+                    collection_mode,
                     "--limit",
                     str(config["limit"]),
                     "--loops",
-                    str(config["loops"]),
+                    str(loops),
                     "--min-interval",
-                    str(config["min_interval"]),
+                    str(min_interval),
                     "--max-interval",
-                    str(config["max_interval"]),
+                    str(max_interval),
                     "--max-consecutive",
-                    str(config["max_consecutive"]),
+                    "1" if logged_in_scroll else str(config["max_consecutive"]),
                     "--max-attempts",
                     str(config["max_attempts"]),
+                    "--max-scrolls-per-keyword",
+                    str(config.get("max_scrolls_per_keyword") or 300),
                     "--resume-dir",
                     str(run_dir),
                     "--base-url",
                     self.base_url,
                     "--output",
-                    str(output_root / "全部关键词_每词20次_累计去重结果.md"),
+                    str(output_root / output_name),
                 ]
                 if config.get("open_browser_window"):
                     command.append("--allow-visible-browser")
-                if config.get("auto_reset_identity"):
+                if config.get("auto_reset_identity") and not logged_in_scroll:
                     command.append("--auto-reset-identity")
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             self._log_handle = self.log_path.open("a", encoding="utf-8")

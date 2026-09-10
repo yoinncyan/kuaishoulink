@@ -61,6 +61,9 @@ class SamplingStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage: Literal["search", "comments"] = "search"
+    collection_mode: Literal[
+        "anonymous_repeat", "logged_in_full_scroll"
+    ] = "anonymous_repeat"
     limit: int = Field(default=10, ge=1, le=10_000)
     loops: int = Field(default=20, ge=1, le=1_000)
     min_interval: float = Field(default=6.0, ge=0.0, le=120.0)
@@ -69,6 +72,9 @@ class SamplingStartRequest(BaseModel):
     max_attempts: int = Field(default=250, ge=1, le=100_000)
     open_browser_window: bool = True
     auto_reset_identity: bool = False
+    scroll_min_interval: float = Field(default=1.5, ge=0.0, le=120.0)
+    scroll_max_interval: float = Field(default=3.0, ge=0.0, le=120.0)
+    max_scrolls_per_keyword: int = Field(default=300, ge=1, le=2_000)
     comment_min_interval: float = Field(default=1.5, ge=0.0, le=120.0)
     comment_max_interval: float = Field(default=3.5, ge=0.0, le=120.0)
 
@@ -79,6 +85,10 @@ class SamplingStartRequest(BaseModel):
         if self.comment_min_interval > self.comment_max_interval:
             raise ValueError(
                 "comment_min_interval must be <= comment_max_interval"
+            )
+        if self.scroll_min_interval > self.scroll_max_interval:
+            raise ValueError(
+                "scroll_min_interval must be <= scroll_max_interval"
             )
         return self
 

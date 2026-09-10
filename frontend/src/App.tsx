@@ -82,14 +82,20 @@ type SessionSummary = {
 
 type SamplingMetric = {
   keyword: string;
+  collection_mode?: "anonymous_repeat" | "logged_in_full_scroll";
   completed_rounds?: number;
   attempted_rounds?: number;
   successful_rounds: number;
   failed_rounds: number;
   unique_videos: number;
+  page_responses?: number;
+  scroll_count?: number;
+  search_cursor?: string;
+  end_marker_visible?: boolean;
 };
 
 type SamplingProgress = {
+  collection_mode?: "anonymous_repeat" | "logged_in_full_scroll";
   phase?: string;
   event?: string;
   current_keyword?: string;
@@ -208,12 +214,18 @@ export default function App() {
   const [message, setMessage] = useState<string | null>(null);
   const [screenshotVersion, setScreenshotVersion] = useState(Date.now());
   const [taskConfig, setTaskConfig] = useState({
+    collection_mode: "logged_in_full_scroll" as
+      | "anonymous_repeat"
+      | "logged_in_full_scroll",
     loops: 20,
     min_interval: 6,
     max_interval: 12,
     max_consecutive: 5,
     open_browser_window: true,
     auto_reset_identity: false,
+    scroll_min_interval: 1.5,
+    scroll_max_interval: 3,
+    max_scrolls_per_keyword: 300,
   });
 
   const refresh = useCallback(async () => {
@@ -265,6 +277,7 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           stage: "search",
+          collection_mode: taskConfig.collection_mode,
           limit: keywordLibraryCount,
           loops: taskConfig.loops,
           min_interval: taskConfig.min_interval,
@@ -273,10 +286,17 @@ export default function App() {
           max_attempts: 250,
           open_browser_window: taskConfig.open_browser_window,
           auto_reset_identity: taskConfig.auto_reset_identity,
+          scroll_min_interval: taskConfig.scroll_min_interval,
+          scroll_max_interval: taskConfig.scroll_max_interval,
+          max_scrolls_per_keyword: taskConfig.max_scrolls_per_keyword,
         }),
       });
       setTaskStatus(next);
-      setMessage("批量采集已开始，后续进度会自动保存到累计主记录。");
+      setMessage(
+        taskConfig.collection_mode === "logged_in_full_scroll"
+          ? "登录态全量滚动已开始：每个关键词只搜索一次，持续下滑到“没有更多了”。"
+          : "匿名多轮采集已开始，后续进度会自动保存到累计主记录。",
+      );
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -422,15 +442,27 @@ export default function App() {
   const taskRunning = taskStatus.state === "running" || taskStatus.state === "starting";
   const taskPausing = taskStatus.state === "pausing";
   const commentRunning = taskRunning && taskStatus.config.stage === "comments";
+  const activeCollectionMode =
+    taskStatus.progress?.collection_mode ??
+    taskStatus.config.collection_mode ??
+    "anonymous_repeat";
+  const selectedCollectionMode =
+    taskRunning && taskStatus.config.stage === "search"
+      ? activeCollectionMode
+      : taskConfig.collection_mode;
+  const loggedInFullScroll = selectedCollectionMode === "logged_in_full_scroll";
+  const selectedRunIsActive = activeCollectionMode === selectedCollectionMode;
   const commentsUpToDate =
     taskStatus.comment_progress?.phase === "completed" &&
     (taskStatus.comment_progress?.stats?.source ?? 0) >= taskStatus.master_unique_links;
-  const taskCompletedRounds = taskStatus.metrics.reduce(
-    (total, metric) => total + (metric.completed_rounds ?? metric.attempted_rounds ?? 0),
-    0,
-  );
+  const taskCompletedRounds = selectedRunIsActive
+    ? taskStatus.metrics.reduce(
+        (total, metric) => total + (metric.completed_rounds ?? metric.attempted_rounds ?? 0),
+        0,
+      )
+    : 0;
   const keywordLibraryCount = taskStatus.keyword_library_count || FULL_KEYWORD_COUNT;
-  const taskTargetRounds = keywordLibraryCount * taskConfig.loops;
+  const taskTargetRounds = keywordLibraryCount * (loggedInFullScroll ? 1 : taskConfig.loops);
   const counts = status.probe?.event_counts ?? {};
   const recent = useMemo(
     () => [...(status.probe?.recent_events ?? [])].reverse().slice(0, 40),
@@ -475,7 +507,13 @@ export default function App() {
             disabled={taskRunning || taskPausing || taskBusy}
             onClick={() => void startTask()}
           >
-            {taskStatus.metrics.length ? "继续全部关键词采集" : "开始全部关键词采集"}
+            {loggedInFullScroll
+              ? selectedRunIsActive && taskStatus.metrics.length
+                ? "继续登录态全量滚动"
+                : "开始登录态全量滚动"
+              : selectedRunIsActive && taskStatus.metrics.length
+                ? "继续匿名多轮采集"
+                : "开始匿名多轮采集"}
           </button>
           <button
             type="button"
@@ -488,12 +526,38 @@ export default function App() {
           <button
             type="button"
             className="danger task-main-button"
-            disabled={taskRunning || taskPausing || taskBusy}
+            disabled={loggedInFullScroll || taskRunning || taskPausing || taskBusy}
             onClick={() => void resetTaskIdentity()}
           >
             深度重置身份
           </button>
         </div>
+
+        <label className="window-toggle">
+          <input
+            type="checkbox"
+            checked={loggedInFullScroll}
+            disabled={taskRunning || taskPausing || taskBusy}
+            onChange={(event) =>
+              setTaskConfig((value) => ({
+                ...value,
+                collection_mode: event.target.checked
+                  ? "logged_in_full_scroll"
+                  : "anonymous_repeat",
+                auto_reset_identity: event.target.checked
+                  ? false
+                  : value.auto_reset_identity,
+              }))
+            }
+          />
+          <span className="toggle-track"><span /></span>
+          <span>
+            <strong>登录后全量滚动</strong>
+            <small>
+              默认开启；每条关键词只搜索一次，持续下滑到“没有更多了”。该模式使用独立进度，但链接合并进同一累计去重总表。
+            </small>
+          </span>
+        </label>
 
         <label className="window-toggle">
           <input
@@ -518,7 +582,7 @@ export default function App() {
           <input
             type="checkbox"
             checked={taskConfig.auto_reset_identity}
-            disabled={taskRunning || taskPausing || taskBusy}
+            disabled={loggedInFullScroll || taskRunning || taskPausing || taskBusy}
             onChange={(event) =>
               setTaskConfig((value) => ({
                 ...value,
@@ -529,7 +593,11 @@ export default function App() {
           <span className="toggle-track"><span /></span>
           <span>
             <strong>自动深度重置</strong>
-            <small>默认关闭；关闭时遇到真实搜索异常会暂停，等待手动重置。</small>
+            <small>
+              {loggedInFullScroll
+                ? "登录模式固定关闭，异常时保留账号和 Profile 并暂停。"
+                : "默认关闭；匿名模式遇到真实搜索异常会暂停，等待手动重置。"}
+            </small>
           </span>
         </label>
 
@@ -538,67 +606,138 @@ export default function App() {
             关键词范围
             <input value={`全部 ${keywordLibraryCount} 条`} readOnly />
           </label>
-          <label>
-            每词总次数
-            <input
-              type="number"
-              min={1}
-              max={1000}
-              value={taskConfig.loops}
-              disabled={taskRunning || taskPausing}
-              onChange={(event) => setTaskConfig((value) => ({ ...value, loops: Number(event.target.value) }))}
-            />
-          </label>
-          <label>
-            最小间隔（秒）
-            <input
-              type="number"
-              min={0}
-              max={120}
-              value={taskConfig.min_interval}
-              disabled={taskRunning || taskPausing}
-              onChange={(event) => setTaskConfig((value) => ({ ...value, min_interval: Number(event.target.value) }))}
-            />
-          </label>
-          <label>
-            最大间隔（秒）
-            <input
-              type="number"
-              min={0}
-              max={120}
-              value={taskConfig.max_interval}
-              disabled={taskRunning || taskPausing}
-              onChange={(event) => setTaskConfig((value) => ({ ...value, max_interval: Number(event.target.value) }))}
-            />
-          </label>
-          <label>
-            同词连续上限
-            <input
-              type="number"
-              min={1}
-              max={5}
-              value={taskConfig.max_consecutive}
-              disabled={taskRunning || taskPausing}
-              onChange={(event) => setTaskConfig((value) => ({ ...value, max_consecutive: Number(event.target.value) }))}
-            />
-          </label>
+          {loggedInFullScroll ? (
+            <>
+              <label>
+                每词搜索次数
+                <input value="固定 1 次" readOnly />
+              </label>
+              <label>
+                最小下滑间隔（秒）
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  step={0.1}
+                  value={taskConfig.scroll_min_interval}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, scroll_min_interval: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                最大下滑间隔（秒）
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  step={0.1}
+                  value={taskConfig.scroll_max_interval}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, scroll_max_interval: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                单词安全下滑上限
+                <input
+                  type="number"
+                  min={1}
+                  max={2000}
+                  value={taskConfig.max_scrolls_per_keyword}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, max_scrolls_per_keyword: Number(event.target.value) }))}
+                />
+              </label>
+            </>
+          ) : (
+            <>
+              <label>
+                每词总次数
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={taskConfig.loops}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, loops: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                最小间隔（秒）
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={taskConfig.min_interval}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, min_interval: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                最大间隔（秒）
+                <input
+                  type="number"
+                  min={0}
+                  max={120}
+                  value={taskConfig.max_interval}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, max_interval: Number(event.target.value) }))}
+                />
+              </label>
+              <label>
+                同词连续上限
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={taskConfig.max_consecutive}
+                  disabled={taskRunning || taskPausing}
+                  onChange={(event) => setTaskConfig((value) => ({ ...value, max_consecutive: Number(event.target.value) }))}
+                />
+              </label>
+            </>
+          )}
         </div>
 
         <div className="task-progress-grid">
           <TaskMetric label="总进度" value={`${taskCompletedRounds}/${taskTargetRounds}`} />
-          <TaskMetric label="当前关键词" value={taskStatus.progress?.current_keyword ?? "—"} />
+          <TaskMetric
+            label="当前关键词"
+            value={selectedRunIsActive ? taskStatus.progress?.current_keyword ?? "—" : "—"}
+          />
           <TaskMetric
             label="当前词进度"
-            value={`${taskStatus.progress?.current_completed_rounds ?? 0}/${taskStatus.progress?.target_search_rounds ?? taskConfig.loops}`}
+            value={selectedRunIsActive
+              ? `${taskStatus.progress?.current_completed_rounds ?? 0}/${taskStatus.progress?.target_search_rounds ?? (loggedInFullScroll ? 1 : taskConfig.loops)}`
+              : `0/${loggedInFullScroll ? 1 : taskConfig.loops}`}
           />
-          <TaskMetric label="本轮去重" value={taskStatus.run_unique_links} />
+          {loggedInFullScroll && (
+            <TaskMetric
+              label="当前词分页响应"
+              value={selectedRunIsActive
+                ? String(taskStatus.progress?.details?.page_responses ?? 0)
+                : "0"}
+            />
+          )}
+          {loggedInFullScroll && (
+            <TaskMetric
+              label="当前词去重链接"
+              value={selectedRunIsActive
+                ? String(taskStatus.progress?.details?.unique_videos ?? 0)
+                : "0"}
+            />
+          )}
+          <TaskMetric label="本模式去重" value={selectedRunIsActive ? taskStatus.run_unique_links : 0} />
           <TaskMetric label="累计去重" value={taskStatus.master_unique_links} />
         </div>
 
         <div className="task-footnote">
-          <span>运行目录：{taskStatus.active_run_dir ?? "将在首次启动时创建"}</span>
           <span>
-            下次启动：{taskConfig.open_browser_window ? "打开 CloakBrowser 窗口" : "后台无窗口模式"}
+            运行目录：{selectedRunIsActive
+              ? taskStatus.active_run_dir ?? "将在首次启动时创建"
+              : "启动时创建或切换到该模式的独立检查点"}
+          </span>
+          <span>
+            下次启动：{loggedInFullScroll ? "登录态全量滚动" : "匿名多轮"} · {taskConfig.open_browser_window ? "打开 CloakBrowser 窗口" : "后台无窗口模式"}
           </span>
         </div>
         {taskStatus.progress?.event === "manual_reset_required" && (
@@ -606,6 +745,13 @@ export default function App() {
             关键词“{taskStatus.progress.current_keyword ?? "未知"}”发生真实搜索异常：
             {String(taskStatus.progress.details?.error ?? "接口返回失败")}
             。任务已暂停，请点击“深度重置身份”后继续。
+          </div>
+        )}
+        {taskStatus.progress?.event === "logged_in_attention_required" && (
+          <div className="task-error">
+            登录态采集已暂停：
+            {String(taskStatus.progress.details?.error ?? "页面或分页接口异常")}
+            。账号、Cookie、指纹和已采集链接均已保留，请检查 CloakBrowser 页面后继续；不要执行深度重置。
           </div>
         )}
         {taskStatus.last_error && <div className="task-error">{taskStatus.last_error}</div>}

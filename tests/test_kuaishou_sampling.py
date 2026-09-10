@@ -142,6 +142,7 @@ def test_runtime_snapshot_records_deduped_links_and_resume_position(tmp_path):
         "max_interval_seconds": 12.0,
         "max_consecutive_per_keyword": 5,
         "auto_reset_identity": False,
+        "collection_mode": "anonymous_repeat",
     }
     assert links["count"] == 1
     assert links["videos"][0]["keywords"] == ["vpn"]
@@ -421,3 +422,106 @@ def test_anonymous_browser_recovers_stale_login_page_without_identity_reset():
     assert login_attempts == 2
     assert ("POST", "/api/browser/close") in calls
     assert ("POST", "/api/browser/navigate") in calls
+
+
+def test_logged_in_full_scroll_searches_once_and_stops_at_no_more(
+    tmp_path, monkeypatch
+):
+    calls = []
+    events = []
+
+    def probe_status(*, final: bool) -> dict:
+        videos = [
+            {
+                "video_id": "VIDEO1",
+                "video_url": "https://www.kuaishou.com/short-video/VIDEO1",
+                "title": "一",
+                "author_name": "作者一",
+            },
+            {
+                "video_id": "VIDEO2",
+                "video_url": "https://www.kuaishou.com/short-video/VIDEO2",
+                "title": "二",
+                "author_name": "作者二",
+            },
+        ]
+        if final:
+            videos.append(
+                {
+                    "video_id": "VIDEO3",
+                    "video_url": "https://www.kuaishou.com/short-video/VIDEO3",
+                    "title": "三",
+                    "author_name": "作者三",
+                }
+            )
+        return {
+            "probe_state": "running",
+            "probe": {
+                "risk_controls": [],
+                "extracted": {
+                    "successful_search_responses": 2 if final else 1,
+                    "failed_search_responses": 0,
+                    "search_feed_rows": 3 if final else 2,
+                    "video_count": len(videos),
+                    "search_cursor": "no_more" if final else "1",
+                    "videos": videos,
+                },
+            },
+        }
+
+    class FullScrollSampler(Sampler):
+        def __init__(self):
+            self.scrolled = False
+
+        def _json(self, method, path, payload=None):
+            calls.append((method, path, payload))
+            if method == "POST" and path == "/api/probe/start":
+                return {
+                    "page_url": "https://www.kuaishou.com/search/vpn",
+                    "search_navigation": {"verified": True},
+                }
+            if method == "GET" and path == "/api/probe/status":
+                return probe_status(final=self.scrolled)
+            if method == "GET" and path == "/api/browser/search-page-state":
+                return {
+                    "search_page": {
+                        "no_more_visible": self.scrolled,
+                        "marker_text": "没有更多了" if self.scrolled else None,
+                    }
+                }
+            if method == "POST" and path == "/api/browser/scroll":
+                self.scrolled = True
+                return {"scroll": {"distance": 2400}}
+            if method == "POST" and path == "/api/probe/stop":
+                return {}
+            raise AssertionError((method, path, payload))
+
+        def wait_first_response(self, timeout_seconds=25.0):
+            return probe_status(final=False)
+
+    monkeypatch.setattr("scripts.sample_kuaishou_top_keywords.time.sleep", lambda _: None)
+    sampler = FullScrollSampler()
+    checkpoint = tmp_path / "vpn.json"
+    metric, videos = sampler.sample_keyword_full_scroll(
+        "vpn",
+        checkpoint,
+        0,
+        0,
+        10,
+        lambda metric, videos, event, details: events.append(
+            (metric, videos, event, details)
+        ),
+    )
+
+    assert sum(path == "/api/probe/start" for _, path, _ in calls) == 1
+    assert not any(path == "/api/probe/repeat-search" for _, path, _ in calls)
+    assert metric["completed_rounds"] == 1
+    assert metric["page_responses"] == 2
+    assert metric["search_cursor"] == "no_more"
+    assert metric["end_marker_visible"] is True
+    assert len(videos) == 3
+    assert events[-1][2] == "keyword_complete"
+    saved = json.loads(checkpoint.read_text())
+    assert saved["collection_mode"] == "logged_in_full_scroll"
+    assert saved["full_scroll_complete"] is True
+    assert saved["scroll_count"] == 1

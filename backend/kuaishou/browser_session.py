@@ -305,6 +305,37 @@ class BrowserProbeManager:
             home_url=getattr(home_page, "url", None),
         )
 
+        # Keep the result navigation in the already CDP-attached home tab.
+        # Kuaishou normally opens a new tab, whose first feed request can race
+        # ahead of CDP attachment. This preserves the real search-box action
+        # while guaranteeing that the initial /rest/v/search/feed response is
+        # observed before logged-in scrolling begins.
+        try:
+            await home_page.evaluate(
+                """
+                () => {
+                  window.open = (url) => {
+                    if (typeof url === 'string' && url) {
+                      window.location.assign(url);
+                    }
+                    return window;
+                  };
+                  for (const element of document.querySelectorAll(
+                    'a[target], form[target]'
+                  )) {
+                    element.removeAttribute('target');
+                  }
+                  return true;
+                }
+                """
+            )
+        except Exception as exc:
+            await probe.mark(
+                "same_tab_search_hook_failed",
+                keyword=keyword,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
         before_pages = {id(page) for page in context.pages}
         trigger_mode = "search_button"
         try:
@@ -890,6 +921,59 @@ class BrowserProbeManager:
             await self._probe.mark("scroll", distance=distance, result=scroll_result)
         payload = self.status()
         payload["scroll"] = scroll_result
+        return payload
+
+    async def search_page_state(self) -> dict[str, Any]:
+        """Read only the UI state needed to control search-result scrolling.
+
+        Video records continue to come exclusively from captured network
+        responses.  The DOM is used here only as a stop condition, matching the
+        visible ``没有更多了`` marker shown by Kuaishou at the result footer.
+        """
+        page = self._require_page()
+        result = await page.evaluate(
+            """
+            () => {
+              const expected = '没有更多了';
+              const visible = (element) => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none'
+                  && style.visibility !== 'hidden'
+                  && Number(style.opacity || 1) > 0
+                  && rect.width > 0
+                  && rect.height > 0
+                  && rect.bottom >= 0
+                  && rect.top <= window.innerHeight;
+              };
+              const candidates = Array.from(document.querySelectorAll('body *'));
+              const marker = candidates.find((element) =>
+                (element.textContent || '').trim() === expected && visible(element)
+              );
+              return {
+                noMorePresent: (document.body?.innerText || '').includes(expected),
+                noMoreVisible: Boolean(marker),
+                markerText: marker ? (marker.textContent || '').trim() : null,
+                scrollY: window.scrollY,
+                viewportHeight: window.innerHeight,
+                documentHeight: Math.max(
+                  document.body?.scrollHeight || 0,
+                  document.documentElement?.scrollHeight || 0
+                ),
+              };
+            }
+            """
+        )
+        search_page = {
+            "no_more_present": bool(result.get("noMorePresent")),
+            "no_more_visible": bool(result.get("noMoreVisible")),
+            "marker_text": result.get("markerText"),
+            "scroll_y": result.get("scrollY"),
+            "viewport_height": result.get("viewportHeight"),
+            "document_height": result.get("documentHeight"),
+        }
+        payload = self.status()
+        payload["search_page"] = search_page
         return payload
 
     def extracted_status(self) -> dict[str, Any]:

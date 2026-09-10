@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -35,13 +36,19 @@ def test_sampling_status_restores_latest_paused_run_and_master_count(tmp_path):
 
 def test_sampling_request_defaults_and_interval_validation():
     request = SamplingStartRequest()
+    assert request.collection_mode == "anonymous_repeat"
     assert request.min_interval == 6
     assert request.max_interval == 12
     assert request.max_consecutive == 5
     assert request.open_browser_window is True
     assert request.auto_reset_identity is False
+    assert request.scroll_min_interval == 1.5
+    assert request.scroll_max_interval == 3
+    assert request.max_scrolls_per_keyword == 300
     with pytest.raises(ValidationError):
         SamplingStartRequest(min_interval=13, max_interval=12)
+    with pytest.raises(ValidationError):
+        SamplingStartRequest(scroll_min_interval=4, scroll_max_interval=3)
 
 
 def test_manual_identity_reset_acknowledges_failed_keyword(tmp_path):
@@ -165,3 +172,91 @@ def test_controller_restores_detailed_process_error(tmp_path):
     assert manager.status()["last_error"] == (
         "采集进程异常：HTTPStatusError: login-status returned 500"
     )
+
+
+def test_resumable_runs_are_separate_for_anonymous_and_logged_in_modes(tmp_path):
+    sampling = tmp_path / "sampling"
+    anonymous = sampling / "anonymous-run"
+    logged_in = sampling / "logged-run"
+    for directory, mode in (
+        (anonymous, "anonymous_repeat"),
+        (logged_in, "logged_in_full_scroll"),
+    ):
+        directory.mkdir(parents=True)
+        (directory / "progress.json").write_text(
+            json.dumps({"phase": "paused", "collection_mode": mode})
+        )
+        (directory / "scope.json").write_text(
+            json.dumps({"collection_mode": mode})
+        )
+
+    manager = SamplingTaskManager(tmp_path, project_root=tmp_path)
+
+    assert manager._discover_resumable_run("anonymous_repeat") == anonymous
+    assert manager._discover_resumable_run("logged_in_full_scroll") == logged_in
+
+
+@pytest.mark.asyncio
+async def test_start_logged_in_mode_uses_new_run_and_full_scroll_command(
+    tmp_path, monkeypatch
+):
+    anonymous = tmp_path / "runtime" / "sampling" / "anonymous-run"
+    anonymous.mkdir(parents=True)
+    (anonymous / "progress.json").write_text(
+        json.dumps({"phase": "paused", "collection_mode": "anonymous_repeat"})
+    )
+    (anonymous / "scope.json").write_text(
+        json.dumps({"collection_mode": "anonymous_repeat"})
+    )
+    captured = {}
+
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self):
+            self.returncode = None
+            self.done = asyncio.Event()
+
+        async def wait(self):
+            await self.done.wait()
+            return self.returncode
+
+        def send_signal(self, _signal):
+            self.returncode = 0
+            self.done.set()
+
+        def terminate(self):
+            self.send_signal(None)
+
+    process = FakeProcess()
+
+    async def fake_subprocess(*command, **kwargs):
+        captured["command"] = list(command)
+        captured["kwargs"] = kwargs
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess)
+    manager = SamplingTaskManager(tmp_path / "runtime", project_root=tmp_path)
+    config = SamplingStartRequest(
+        collection_mode="logged_in_full_scroll",
+        limit=2463,
+        open_browser_window=True,
+    ).model_dump()
+
+    status = await manager.start(config)
+
+    assert status["active_run_dir"] != str(anonymous)
+    assert status["active_run_dir"].endswith("-logged-in")
+    command = captured["command"]
+    assert command[command.index("--collection-mode") + 1] == (
+        "logged_in_full_scroll"
+    )
+    assert command[command.index("--loops") + 1] == "1"
+    assert command[command.index("--max-consecutive") + 1] == "1"
+    assert command[command.index("--max-scrolls-per-keyword") + 1] == "300"
+    assert "--auto-reset-identity" not in command
+    assert any(
+        "全部关键词_登录态全量滚动_累计去重结果.md" in part
+        for part in command
+    )
+    await manager.pause()

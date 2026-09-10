@@ -51,6 +51,10 @@ class ManualResetRequired(RuntimeError):
     """A verified search failed while automatic identity reset was disabled."""
 
 
+class LoggedInAttentionRequired(RuntimeError):
+    """A logged-in full-scroll search stopped without resetting its Profile."""
+
+
 def load_keywords(path: Path, limit: int) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
@@ -222,6 +226,7 @@ def render_markdown(
     max_interval: float = 12.0,
     max_consecutive: int = 5,
     auto_reset_identity: bool = False,
+    collection_mode: str = "anonymous_repeat",
 ) -> None:
     keyword_order = {row["keyword"]: index for index, row in enumerate(keyword_rows)}
     raw_hits = sum(int(metric.get("raw_feed_rows") or 0) for metric in metrics)
@@ -230,15 +235,39 @@ def render_markdown(
     failed = sum(int(metric.get("failed_rounds") or 0) for metric in metrics)
     identity_resets = sum(int(metric.get("identity_resets") or 0) for metric in metrics)
     records = build_markdown_records(aggregate, keyword_order)
+    logged_in_scroll = collection_mode == "logged_in_full_scroll"
+    title_mode = "登录态全量滚动" if logged_in_scroll else "匿名交错采样"
+    if logged_in_scroll:
+        mode_line = (
+            f"- 模式：已登录；TSV前 {len(keyword_rows)} 个关键词；"
+            "每词只提交 1 次搜索，随后滚动到“没有更多了”"
+        )
+        schedule_line = (
+            f"- 滚动间隔：随机 {min_interval:g}–{max_interval:g} 秒；"
+            "视频数据全部来自滚动触发的 /rest/v/search/feed 响应。"
+        )
+        reset_line = "- 登录身份保护：异常时暂停，不自动深度重置 Profile。"
+    else:
+        mode_line = (
+            f"- 模式：未登录；TSV前 {len(keyword_rows)} 个关键词；"
+            f"每词总计 {requested_loops} 次"
+        )
+        schedule_line = (
+            f"- 调度：同一关键词每批随机 1–{max_consecutive} 次；"
+            f"搜索间隔随机 {min_interval:g}–{max_interval:g} 秒"
+        )
+        reset_line = (
+            f"- 自动深度重置：{'开启' if auto_reset_identity else '关闭（异常时暂停等待人工处理）'}"
+        )
 
     lines = [
-        f"# 快手视频链接（{len(keyword_rows)}个关键词匿名交错采样）",
+        f"# 快手视频链接（{len(keyword_rows)}个关键词{title_mode}）",
         "",
         f"- 采集开始：{_japan_time(started_at)}",
         f"- 采集结束：{_japan_time(ended_at)}",
-        f"- 模式：未登录；TSV前 {len(keyword_rows)} 个关键词；每词总计 {requested_loops} 次",
-        f"- 调度：同一关键词每批随机 1–{max_consecutive} 次；搜索间隔随机 {min_interval:g}–{max_interval:g} 秒",
-        f"- 自动深度重置：{'开启' if auto_reset_identity else '关闭（异常时暂停等待人工处理）'}",
+        mode_line,
+        schedule_line,
+        reset_line,
         "- 搜索入口：首页搜索框输入关键词并点击“搜索”；不直接打开 /search/{keyword}。",
         f"- 搜索成功轮次：{successful}",
         f"- 搜索失败轮次：{failed}",
@@ -375,8 +404,8 @@ def render_master_markdown(
         "",
         "## 数据批次",
         "",
-        "| 批次 | 批次内去重链接 | 状态 |",
-        "|---|---:|---|",
+        "| 批次 | 采集模式 | 批次内去重链接 | 状态 |",
+        "|---|---|---:|---|",
     ]
     for run_id in sorted(sources):
         source = sources[run_id]
@@ -386,6 +415,7 @@ def render_master_markdown(
                 _clean_cell(value)
                 for value in (
                     run_id,
+                    source.get("collection_mode", "历史/未标记"),
                     source.get("unique_video_count", ""),
                     source.get("status", "recorded"),
                 )
@@ -452,6 +482,7 @@ def load_checkpoint(path: Path, keyword: str) -> dict[str, Any]:
     if not path.exists():
         return {
             "keyword": keyword,
+            "collection_mode": "anonymous_repeat",
             "runs": [],
             "successful_rounds": 0,
             "failed_rounds": 0,
@@ -459,6 +490,12 @@ def load_checkpoint(path: Path, keyword: str) -> dict[str, Any]:
             "identity_resets": 0,
             "last_event": None,
             "videos": [],
+            "full_scroll_complete": False,
+            "search_attempts": 0,
+            "page_responses": 0,
+            "scroll_count": 0,
+            "search_cursor": None,
+            "end_marker_visible": False,
         }
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("keyword") != keyword:
@@ -476,6 +513,13 @@ def load_checkpoint(path: Path, keyword: str) -> dict[str, Any]:
     payload.setdefault("identity_resets", 0)
     payload.setdefault("last_event", None)
     payload.setdefault("videos", [])
+    payload.setdefault("collection_mode", "anonymous_repeat")
+    payload.setdefault("full_scroll_complete", False)
+    payload.setdefault("search_attempts", 0)
+    payload.setdefault("page_responses", 0)
+    payload.setdefault("scroll_count", 0)
+    payload.setdefault("search_cursor", None)
+    payload.setdefault("end_marker_visible", False)
     return payload
 
 
@@ -524,8 +568,28 @@ def _metric_rounds(metric: dict[str, Any]) -> int:
 def checkpoint_metric(payload: dict[str, Any]) -> dict[str, Any]:
     videos = payload.get("videos") or []
     runs = payload.get("runs") or []
+    collection_mode = str(payload.get("collection_mode") or "anonymous_repeat")
+    if collection_mode == "logged_in_full_scroll":
+        completed = int(bool(payload.get("full_scroll_complete")))
+        return {
+            "keyword": payload["keyword"],
+            "collection_mode": collection_mode,
+            "attempted_rounds": int(payload.get("search_attempts") or 0),
+            "completed_rounds": completed,
+            "successful_rounds": completed,
+            "failed_rounds": int(payload.get("failed_rounds") or 0),
+            "raw_feed_rows": int(payload.get("raw_feed_rows") or 0),
+            "unique_videos": len(videos),
+            "risk_control_count": sum(_row_has_risk(row) for row in runs),
+            "identity_resets": 0,
+            "page_responses": int(payload.get("page_responses") or 0),
+            "scroll_count": int(payload.get("scroll_count") or 0),
+            "search_cursor": payload.get("search_cursor"),
+            "end_marker_visible": bool(payload.get("end_marker_visible")),
+        }
     return {
         "keyword": payload["keyword"],
+        "collection_mode": collection_mode,
         "attempted_rounds": len(runs),
         "completed_rounds": _counted_rounds(runs),
         "successful_rounds": int(payload.get("successful_rounds") or 0),
@@ -562,6 +626,7 @@ def save_runtime_snapshot(
     max_interval: float = 12.0,
     max_consecutive: int = 5,
     auto_reset_identity: bool = False,
+    collection_mode: str = "anonymous_repeat",
 ) -> None:
     """Atomically record links and exact resume position before any reset."""
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -574,10 +639,12 @@ def save_runtime_snapshot(
         "run_complete": "completed",
         "user_paused": "paused",
         "manual_reset_required": "paused",
+        "logged_in_attention_required": "paused",
         "run_interrupted": "interrupted",
     }.get(event, "collect_links")
     progress = {
         "schema_version": 1,
+        "collection_mode": collection_mode,
         "phase": phase,
         "started_at": started_at,
         "updated_at": now,
@@ -595,6 +662,7 @@ def save_runtime_snapshot(
             "max_interval_seconds": max_interval,
             "max_consecutive_per_keyword": max_consecutive,
             "auto_reset_identity": auto_reset_identity,
+            "collection_mode": collection_mode,
         },
         "resume_from_round": min(
             _metric_rounds(metric) + 1,
@@ -612,6 +680,7 @@ def save_runtime_snapshot(
         {
             "started_at": started_at,
             "updated_at": now,
+            "collection_mode": collection_mode,
             "metrics": metrics,
             "videos": serialized_videos,
         },
@@ -671,6 +740,22 @@ class Sampler:
             pass
         return self._navigate_anonymous_home()
 
+    def _login_status_with_recovery(self) -> dict:
+        try:
+            return self._json("GET", "/api/browser/login-status")
+        except httpx.HTTPStatusError as exc:
+            response = exc.response
+            if response is None or response.status_code not in {
+                409,
+                500,
+                502,
+                503,
+                504,
+            }:
+                raise
+            self._restart_stale_browser()
+            return self._json("GET", "/api/browser/login-status")
+
     def ensure_anonymous_browser(self) -> dict:
         status = self._json("GET", "/api/probe/status")
         if status.get("probe_state") in {"starting", "running", "error"}:
@@ -679,24 +764,27 @@ class Sampler:
             self._navigate_anonymous_home()
         status = self._json("GET", "/api/probe/status")
         if str(status.get("page_url") or "").startswith("https://www.kuaishou.com"):
-            try:
-                login = self._json("GET", "/api/browser/login-status")
-            except httpx.HTTPStatusError as exc:
-                response = exc.response
-                if response is None or response.status_code not in {
-                    409,
-                    500,
-                    502,
-                    503,
-                    504,
-                }:
-                    raise
-                self._restart_stale_browser()
-                login = self._json("GET", "/api/browser/login-status")
+            login = self._login_status_with_recovery()
             if login.get("logged_in"):
                 raise RuntimeError("当前浏览器已登录；本任务要求匿名 Profile")
             return login
         return {"logged_in": False, "check_login": None, "deferred": True}
+
+    def ensure_logged_in_browser(self) -> dict:
+        """Require a live Kuaishou page backed by the persisted signed-in Profile."""
+        status = self._json("GET", "/api/probe/status")
+        if status.get("probe_state") in {"starting", "running", "error"}:
+            self._json("POST", "/api/probe/stop", {})
+        if status.get("browser_state") != "running" or not str(
+            status.get("page_url") or ""
+        ).startswith("https://www.kuaishou.com"):
+            self._navigate_anonymous_home()
+        login = self._login_status_with_recovery()
+        if not login.get("logged_in"):
+            raise LoggedInAttentionRequired(
+                "当前 Profile 尚未登录快手；请在 CloakBrowser 完成登录后继续"
+            )
+        return login
 
     def reset_anonymous_identity(self) -> dict[str, Any]:
         """Clear the full persistent profile and verify the new one is anonymous."""
@@ -1012,6 +1100,338 @@ class Sampler:
         finally:
             stop_probe()
 
+    def sample_keyword_full_scroll(
+        self,
+        keyword: str,
+        checkpoint: Path,
+        min_interval: float,
+        max_interval: float,
+        max_scrolls: int,
+        on_checkpoint: Callable[
+            [dict[str, Any], list[dict[str, Any]], str, dict[str, Any] | None],
+            None,
+        ],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Search once, then collect every network page until Kuaishou ends it."""
+        state = load_checkpoint(checkpoint, keyword)
+        keyword_videos: dict[str, dict[str, Any]] = {}
+        merge_keyword_videos(keyword_videos, list(state.get("videos") or []))
+        runs = list(state.get("runs") or [])
+        search_attempts = int(state.get("search_attempts") or 0)
+        failed_rounds = int(state.get("failed_rounds") or 0)
+        raw_feed_rows = int(state.get("raw_feed_rows") or 0)
+        page_responses = int(state.get("page_responses") or 0)
+        scroll_count = int(state.get("scroll_count") or 0)
+        search_cursor = state.get("search_cursor")
+        end_marker_visible = bool(state.get("end_marker_visible"))
+        full_scroll_complete = bool(state.get("full_scroll_complete"))
+
+        def persist(event: str, details: dict[str, Any] | None = None) -> None:
+            nonlocal state
+            state = {
+                "schema_version": 3,
+                "collection_mode": "logged_in_full_scroll",
+                "keyword": keyword,
+                "runs": runs,
+                "successful_rounds": int(full_scroll_complete),
+                "failed_rounds": failed_rounds,
+                "raw_feed_rows": raw_feed_rows,
+                "identity_resets": 0,
+                "last_event": event,
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "videos": list(keyword_videos.values()),
+                "full_scroll_complete": full_scroll_complete,
+                "search_attempts": search_attempts,
+                "page_responses": page_responses,
+                "scroll_count": scroll_count,
+                "search_cursor": search_cursor,
+                "end_marker_visible": end_marker_visible,
+            }
+            save_checkpoint(checkpoint, state)
+            on_checkpoint(
+                checkpoint_metric(state),
+                list(keyword_videos.values()),
+                event,
+                details,
+            )
+
+        probe_active = False
+
+        def stop_probe() -> None:
+            nonlocal probe_active
+            try:
+                status = self._json("GET", "/api/probe/status")
+                if status.get("probe_state") in {"starting", "running", "error"}:
+                    self._json("POST", "/api/probe/stop", {})
+            except Exception:
+                pass
+            probe_active = False
+
+        def mark_attempt_failed(error: str, details: dict[str, Any]) -> None:
+            nonlocal failed_rounds
+            failed_rounds += 1
+            if runs and runs[-1].get("attempt") == search_attempts:
+                runs[-1].update(
+                    {
+                        "successful": False,
+                        "error": error,
+                        "completed_at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                    }
+                )
+            else:
+                runs.append(
+                    {
+                        "attempt": search_attempts,
+                        "successful": False,
+                        "counted_as_round": False,
+                        "error": error,
+                        "recorded_at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                    }
+                )
+            persist(
+                "logged_in_attention_required",
+                {"error": error, "preserved_login": True, **details},
+            )
+
+        persist("resume_loaded")
+        if full_scroll_complete:
+            persist("keyword_complete")
+            return checkpoint_metric(state), list(keyword_videos.values())
+
+        attempt_scrolls = 0
+        try:
+            delay = random.uniform(min_interval, max_interval)
+            time.sleep(delay)
+            search_attempts += 1
+            started = self._json("POST", "/api/probe/start", {"keyword": keyword})
+            probe_active = True
+            expected_url = "https://www.kuaishou.com/search/" + quote(keyword, safe="")
+            navigation = started.get("search_navigation") or {}
+            if not navigation.get("verified") or not str(
+                started.get("page_url") or ""
+            ).startswith(expected_url):
+                raise RuntimeError(
+                    "search navigation was not visibly committed: "
+                    + str(started.get("page_url"))
+                )
+            status = self.wait_first_response()
+            probe = status.get("probe") or {}
+            extracted = probe.get("extracted") or {}
+            risks = list(probe.get("risk_controls") or [])
+            successful_responses = int(
+                extracted.get("successful_search_responses") or 0
+            )
+            failed_responses = int(extracted.get("failed_search_responses") or 0)
+            if risks or failed_responses or successful_responses < 1:
+                error = (
+                    str(risks[-1].get("intercept_result"))
+                    if risks
+                    else "logged-in search feed did not return a successful response"
+                )
+                mark_attempt_failed(
+                    error,
+                    {
+                        "failed_responses": failed_responses,
+                        "risk_control": bool(risks),
+                    },
+                )
+                raise LoggedInAttentionRequired(error)
+
+            merge_keyword_videos(keyword_videos, list(extracted.get("videos") or []))
+            raw_feed_rows = max(
+                raw_feed_rows, int(extracted.get("search_feed_rows") or 0)
+            )
+            page_responses = max(page_responses, successful_responses)
+            search_cursor = extracted.get("search_cursor")
+            runs.append(
+                {
+                    "attempt": search_attempts,
+                    "successful": True,
+                    "counted_as_round": False,
+                    "initial_delay_seconds": round(delay, 3),
+                    "recorded_at": datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                }
+            )
+            page_state = self._json("GET", "/api/browser/search-page-state").get(
+                "search_page", {}
+            )
+            end_marker_visible = bool(page_state.get("no_more_visible"))
+            persist(
+                "full_scroll_search_started",
+                {
+                    "search_attempt": search_attempts,
+                    "page_responses": page_responses,
+                    "raw_feed_rows": raw_feed_rows,
+                    "unique_videos": len(keyword_videos),
+                    "search_cursor": search_cursor,
+                },
+            )
+
+            while search_cursor != "no_more" and not end_marker_visible:
+                if attempt_scrolls >= max_scrolls:
+                    error = f"达到单关键词最大下滑次数 {max_scrolls}，尚未出现‘没有更多了’"
+                    mark_attempt_failed(
+                        error,
+                        {
+                            "scroll_count": scroll_count,
+                            "search_cursor": search_cursor,
+                        },
+                    )
+                    raise LoggedInAttentionRequired(error)
+
+                delay = random.uniform(min_interval, max_interval)
+                time.sleep(delay)
+                before_responses = int(
+                    extracted.get("successful_search_responses") or 0
+                )
+                self._json("POST", "/api/browser/scroll", {"distance": 2400})
+                attempt_scrolls += 1
+                scroll_count += 1
+
+                deadline = time.monotonic() + 12.0
+                response_advanced = False
+                while time.monotonic() < deadline:
+                    status = self._json("GET", "/api/probe/status")
+                    probe = status.get("probe") or {}
+                    extracted = probe.get("extracted") or {}
+                    risks = list(probe.get("risk_controls") or [])
+                    page_state = self._json(
+                        "GET", "/api/browser/search-page-state"
+                    ).get("search_page", {})
+                    current_responses = int(
+                        extracted.get("successful_search_responses") or 0
+                    )
+                    failed_responses = int(
+                        extracted.get("failed_search_responses") or 0
+                    )
+                    search_cursor = extracted.get("search_cursor")
+                    end_marker_visible = bool(page_state.get("no_more_visible"))
+                    response_advanced = current_responses > before_responses
+                    if (
+                        response_advanced
+                        or search_cursor == "no_more"
+                        or end_marker_visible
+                        or risks
+                        or failed_responses
+                    ):
+                        break
+                    time.sleep(0.25)
+
+                merge_keyword_videos(
+                    keyword_videos, list(extracted.get("videos") or [])
+                )
+                raw_feed_rows = max(
+                    raw_feed_rows, int(extracted.get("search_feed_rows") or 0)
+                )
+                page_responses = max(
+                    page_responses,
+                    int(extracted.get("successful_search_responses") or 0),
+                )
+                if risks or failed_responses:
+                    error = (
+                        str(risks[-1].get("intercept_result"))
+                        if risks
+                        else "search pagination returned a failed response"
+                    )
+                    mark_attempt_failed(
+                        error,
+                        {
+                            "failed_responses": failed_responses,
+                            "risk_control": bool(risks),
+                            "scroll_count": scroll_count,
+                        },
+                    )
+                    raise LoggedInAttentionRequired(error)
+
+                event = (
+                    "full_scroll_end_observed"
+                    if search_cursor == "no_more" or end_marker_visible
+                    else "full_scroll_page_loaded"
+                    if response_advanced
+                    else "full_scroll_waiting"
+                )
+                persist(
+                    event,
+                    {
+                        "delay_seconds": round(delay, 3),
+                        "response_advanced": response_advanced,
+                        "page_responses": page_responses,
+                        "raw_feed_rows": raw_feed_rows,
+                        "unique_videos": len(keyword_videos),
+                        "search_cursor": search_cursor,
+                        "end_marker_visible": end_marker_visible,
+                        "attempt_scrolls": attempt_scrolls,
+                        "total_scrolls": scroll_count,
+                    },
+                )
+                print(
+                    f"[{keyword}] full-scroll responses={page_responses} "
+                    f"raw={raw_feed_rows} unique={len(keyword_videos)} "
+                    f"cursor={search_cursor} end={end_marker_visible} "
+                    f"scroll={attempt_scrolls}/{max_scrolls}",
+                    flush=True,
+                )
+
+            full_scroll_complete = True
+            if runs:
+                runs[-1].update(
+                    {
+                        "counted_as_round": True,
+                        "full_scroll_complete": True,
+                        "page_responses": page_responses,
+                        "raw_feed_rows": raw_feed_rows,
+                        "unique_videos": len(keyword_videos),
+                        "search_cursor": search_cursor,
+                        "end_marker_visible": end_marker_visible,
+                        "scrolls": attempt_scrolls,
+                        "completed_at": datetime.now(timezone.utc).isoformat(
+                            timespec="seconds"
+                        ),
+                    }
+                )
+            persist(
+                "keyword_complete",
+                {
+                    "page_responses": page_responses,
+                    "raw_feed_rows": raw_feed_rows,
+                    "unique_videos": len(keyword_videos),
+                    "search_cursor": search_cursor,
+                    "end_marker_visible": end_marker_visible,
+                    "scrolls": attempt_scrolls,
+                },
+            )
+            return checkpoint_metric(state), list(keyword_videos.values())
+        except KeyboardInterrupt:
+            persist(
+                "user_paused",
+                {
+                    "reason": "keyboard_interrupt",
+                    "search_cursor": search_cursor,
+                    "unique_videos": len(keyword_videos),
+                },
+            )
+            raise
+        except LoggedInAttentionRequired:
+            raise
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            mark_attempt_failed(
+                error,
+                {
+                    "scroll_count": scroll_count,
+                    "search_cursor": search_cursor,
+                },
+            )
+            raise LoggedInAttentionRequired(error) from exc
+        finally:
+            stop_probe()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -1022,6 +1442,11 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--loops", type=int, default=20)
+    parser.add_argument(
+        "--collection-mode",
+        choices=("anonymous_repeat", "logged_in_full_scroll"),
+        default="anonymous_repeat",
+    )
     parser.add_argument("--min-interval", type=float, default=6.0)
     parser.add_argument("--max-interval", type=float, default=12.0)
     parser.add_argument("--max-consecutive", type=int, default=5)
@@ -1036,6 +1461,7 @@ def main() -> None:
         help="allow a headed browser that can take desktop focus",
     )
     parser.add_argument("--max-attempts", type=int, default=250)
+    parser.add_argument("--max-scrolls-per-keyword", type=int, default=300)
     parser.add_argument("--resume-dir", type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:8080")
     parser.add_argument(
@@ -1068,6 +1494,9 @@ def main() -> None:
         raise ValueError("min interval must be <= max interval")
     if not 1 <= args.max_consecutive <= 5:
         raise ValueError("max consecutive searches must be between 1 and 5")
+    if args.max_scrolls_per_keyword < 1:
+        raise ValueError("max scrolls per keyword must be positive")
+    requested_loops = 1 if args.collection_mode == "logged_in_full_scroll" else args.loops
     keyword_rows = load_keywords(args.keywords, args.limit)
     keyword_order = {row["keyword"]: index for index, row in enumerate(keyword_rows)}
     all_keyword_rows = load_keywords(args.keywords, 1_000_000)
@@ -1076,12 +1505,43 @@ def main() -> None:
     }
     session_stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     runtime_dir = args.resume_dir or (Path("runtime/sampling") / session_stamp)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    scope_path = runtime_dir / "scope.json"
+    existing_scope: dict[str, Any] = {}
+    if scope_path.exists():
+        existing_scope = json.loads(scope_path.read_text(encoding="utf-8"))
+        existing_mode = str(
+            existing_scope.get("collection_mode") or "anonymous_repeat"
+        )
+        if existing_mode != args.collection_mode:
+            raise ValueError(
+                f"运行目录模式为 {existing_mode}，不能用于 {args.collection_mode}"
+            )
+    _atomic_json(
+        scope_path,
+        {
+            **existing_scope,
+            "schema_version": 2,
+            "collection_mode": args.collection_mode,
+            "keyword_file": str(args.keywords),
+            "keyword_count": len(keyword_rows),
+            "loops_per_keyword": requested_loops,
+            "target_rounds": len(keyword_rows) * requested_loops,
+            "max_scrolls_per_keyword": args.max_scrolls_per_keyword,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
+    )
     aggregate: dict[str, dict[str, Any]] = {}
     metrics: list[dict[str, Any]] = []
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     aggregate_path = runtime_dir / "aggregate.json"
     if aggregate_path.exists():
         saved = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        saved_mode = str(saved.get("collection_mode") or "anonymous_repeat")
+        if saved_mode != args.collection_mode:
+            raise ValueError(
+                f"aggregate 模式为 {saved_mode}，不能用于 {args.collection_mode}"
+            )
         metrics = list(saved.get("metrics") or [])
         started_at = saved.get("started_at") or started_at
         for video in saved.get("videos") or []:
@@ -1129,13 +1589,14 @@ def main() -> None:
             metric=metric,
             metrics=metrics,
             aggregate=aggregate,
-            requested_loops=args.loops,
+            requested_loops=requested_loops,
             event=event,
             details=details,
             min_interval=args.min_interval,
             max_interval=args.max_interval,
             max_consecutive=args.max_consecutive,
             auto_reset_identity=args.auto_reset_identity,
+            collection_mode=args.collection_mode,
         )
         merge_into_master(master, videos, master_keyword_order)
         master_sources[runtime_dir.name] = {
@@ -1143,6 +1604,7 @@ def main() -> None:
             "path": str(runtime_dir),
             "unique_video_count": len(aggregate),
             "status": "active",
+            "collection_mode": args.collection_mode,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         save_master_record(args.master_json, master, master_sources)
@@ -1162,6 +1624,7 @@ def main() -> None:
             "path": str(runtime_dir),
             "unique_video_count": len(aggregate),
             "status": status,
+            "collection_mode": args.collection_mode,
             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         save_master_record(args.master_json, master, master_sources)
@@ -1176,8 +1639,12 @@ def main() -> None:
                 "自动采集要求后台无窗口模式；请以 "
                 "KUAISHOU_BROWSER_HEADLESS=true 启动服务"
             )
-        login = sampler.ensure_anonymous_browser()
-        print(f"anonymous={not login['logged_in']}", flush=True)
+        if args.collection_mode == "logged_in_full_scroll":
+            login = sampler.ensure_logged_in_browser()
+            print(f"logged_in={bool(login['logged_in'])}", flush=True)
+        else:
+            login = sampler.ensure_anonymous_browser()
+            print(f"anonymous={not login['logged_in']}", flush=True)
         scheduler_cycle = 0
         while True:
             pending: list[tuple[int, dict[str, str], Path, dict[str, Any]]] = []
@@ -1185,9 +1652,13 @@ def main() -> None:
                 keyword = keyword_row["keyword"]
                 checkpoint_path = keyword_checkpoint_path(runtime_dir, keyword_row)
                 checkpoint_state = load_checkpoint(checkpoint_path, keyword)
-                pending_error_reset = _needs_identity_reset(checkpoint_state)
+                metric = checkpoint_metric(checkpoint_state)
+                pending_error_reset = (
+                    args.collection_mode == "anonymous_repeat"
+                    and _needs_identity_reset(checkpoint_state)
+                )
                 if (
-                    _counted_rounds(checkpoint_state["runs"]) < args.loops
+                    _metric_rounds(metric) < requested_loops
                     or pending_error_reset
                 ):
                     pending.append(
@@ -1200,15 +1671,23 @@ def main() -> None:
             for position, keyword_row, checkpoint_path, checkpoint_state in pending:
                 current_position = position
                 keyword = keyword_row["keyword"]
-                completed_before = _counted_rounds(checkpoint_state["runs"])
-                remaining = max(0, args.loops - completed_before)
-                batch_size = min(
-                    remaining,
-                    random.randint(1, args.max_consecutive),
+                completed_before = _metric_rounds(
+                    checkpoint_metric(checkpoint_state)
+                )
+                remaining = max(0, requested_loops - completed_before)
+                batch_size = (
+                    1
+                    if args.collection_mode == "logged_in_full_scroll"
+                    else min(
+                        remaining,
+                        random.randint(1, args.max_consecutive),
+                    )
                 )
                 print(
-                    f"[scheduler] cycle={scheduler_cycle} keyword={keyword} "
-                    f"completed={completed_before}/{args.loops} batch={batch_size}",
+                    f"[scheduler] mode={args.collection_mode} "
+                    f"cycle={scheduler_cycle} keyword={keyword} "
+                    f"completed={completed_before}/{requested_loops} "
+                    f"batch={batch_size}",
                     flush=True,
                 )
 
@@ -1236,17 +1715,27 @@ def main() -> None:
                         },
                     )
 
-                sampler.sample_keyword(
-                    keyword,
-                    args.loops,
-                    args.min_interval,
-                    args.max_interval,
-                    checkpoint_path,
-                    args.max_attempts,
-                    batch_size,
-                    args.auto_reset_identity,
-                    batch_checkpoint,
-                )
+                if args.collection_mode == "logged_in_full_scroll":
+                    sampler.sample_keyword_full_scroll(
+                        keyword,
+                        checkpoint_path,
+                        args.min_interval,
+                        args.max_interval,
+                        args.max_scrolls_per_keyword,
+                        batch_checkpoint,
+                    )
+                else:
+                    sampler.sample_keyword(
+                        keyword,
+                        requested_loops,
+                        args.min_interval,
+                        args.max_interval,
+                        checkpoint_path,
+                        args.max_attempts,
+                        batch_size,
+                        args.auto_reset_identity,
+                        batch_checkpoint,
+                    )
         if metrics:
             last_metric = metrics[-1]
             save_runtime_snapshot(
@@ -1257,12 +1746,13 @@ def main() -> None:
                 metric=last_metric,
                 metrics=metrics,
                 aggregate=aggregate,
-                requested_loops=args.loops,
+                requested_loops=requested_loops,
                 event="run_complete",
                 min_interval=args.min_interval,
                 max_interval=args.max_interval,
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
+                collection_mode=args.collection_mode,
             )
             mark_master_status("completed")
     except KeyboardInterrupt:
@@ -1284,13 +1774,14 @@ def main() -> None:
                 metric=last_metric,
                 metrics=metrics,
                 aggregate=aggregate,
-                requested_loops=args.loops,
+                requested_loops=requested_loops,
                 event="user_paused",
                 details={"reason": "keyboard_interrupt"},
                 min_interval=args.min_interval,
                 max_interval=args.max_interval,
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
+                collection_mode=args.collection_mode,
             )
             mark_master_status("paused")
         print("sampling paused; checkpoints saved", flush=True)
@@ -1313,16 +1804,67 @@ def main() -> None:
                 metric=last_metric,
                 metrics=metrics,
                 aggregate=aggregate,
-                requested_loops=args.loops,
+                requested_loops=requested_loops,
                 event="manual_reset_required",
                 details={"error": str(exc)},
                 min_interval=args.min_interval,
                 max_interval=args.max_interval,
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=False,
+                collection_mode=args.collection_mode,
             )
             mark_master_status("paused")
         print(f"sampling paused; manual reset required: {exc}", flush=True)
+    except LoggedInAttentionRequired as exc:
+        if not metrics:
+            keyword = keyword_rows[current_position - 1]["keyword"]
+            metrics = [
+                {
+                    "keyword": keyword,
+                    "collection_mode": "logged_in_full_scroll",
+                    "attempted_rounds": 0,
+                    "completed_rounds": 0,
+                    "successful_rounds": 0,
+                    "failed_rounds": 0,
+                    "raw_feed_rows": 0,
+                    "unique_videos": 0,
+                    "risk_control_count": 0,
+                    "identity_resets": 0,
+                    "page_responses": 0,
+                    "scroll_count": 0,
+                    "search_cursor": None,
+                    "end_marker_visible": False,
+                }
+            ]
+        if metrics:
+            last_metric = next(
+                (
+                    row
+                    for row in metrics
+                    if row.get("keyword")
+                    == keyword_rows[current_position - 1]["keyword"]
+                ),
+                metrics[-1],
+            )
+            save_runtime_snapshot(
+                runtime_dir,
+                started_at=started_at,
+                keyword_rows=keyword_rows,
+                keyword_position=current_position,
+                metric=last_metric,
+                metrics=metrics,
+                aggregate=aggregate,
+                requested_loops=requested_loops,
+                event="logged_in_attention_required",
+                details={"error": str(exc), "preserved_login": True},
+                min_interval=args.min_interval,
+                max_interval=args.max_interval,
+                max_consecutive=1,
+                auto_reset_identity=False,
+                collection_mode=args.collection_mode,
+            )
+            mark_master_status("paused")
+        print(f"sampling paused; logged-in attention required: {exc}", flush=True)
     except Exception as exc:
         run_error = exc
         if metrics:
@@ -1342,13 +1884,14 @@ def main() -> None:
                 metric=last_metric,
                 metrics=metrics,
                 aggregate=aggregate,
-                requested_loops=args.loops,
+                requested_loops=requested_loops,
                 event="run_interrupted",
                 details={"error": f"{type(exc).__name__}: {exc}"},
                 min_interval=args.min_interval,
                 max_interval=args.max_interval,
                 max_consecutive=args.max_consecutive,
                 auto_reset_identity=args.auto_reset_identity,
+                collection_mode=args.collection_mode,
             )
             mark_master_status("interrupted")
     finally:
@@ -1362,18 +1905,20 @@ def main() -> None:
             aggregate,
             started_at,
             ended_at,
-            args.loops,
+            requested_loops,
             args.min_interval,
             args.max_interval,
             args.max_consecutive,
             args.auto_reset_identity,
+            args.collection_mode,
         )
     print(
         json.dumps(
             {
                 "output": str(args.output),
                 "keywords": len(keyword_rows),
-                "loops_per_keyword": args.loops,
+                "collection_mode": args.collection_mode,
+                "loops_per_keyword": requested_loops,
                 "raw_feed_rows": sum(row["raw_feed_rows"] for row in metrics),
                 "global_unique_videos": len(aggregate),
             },
